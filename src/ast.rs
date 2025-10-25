@@ -54,6 +54,10 @@ pub enum Block {
         argument: String,
         content: Vec<Block>,
     },
+    Table {
+        headers: Vec<Vec<Inline>>,
+        rows: Vec<Vec<Vec<Inline>>>,
+    },
 }
 
 impl std::fmt::Display for Block {
@@ -91,6 +95,28 @@ impl std::fmt::Display for Block {
                 write!(f, "<pre><code>{}</code></pre>", html_escape(code))
             }
             Block::Directive { name, argument, content } => render_directive(f, name, argument, content),
+            Block::Table { headers, rows } => {
+                write!(f, "<table>")?;
+                if !headers.is_empty() {
+                    write!(f, "<thead><tr>")?;
+                    for header_cell in headers {
+                        write!(f, "<th>{}</th>", join_inlines(header_cell))?;
+                    }
+                    write!(f, "</tr></thead>")?;
+                }
+                if !rows.is_empty() {
+                    write!(f, "<tbody>")?;
+                    for row in rows {
+                        write!(f, "<tr>")?;
+                        for cell in row {
+                            write!(f, "<td>{}</td>", join_inlines(cell))?;
+                        }
+                        write!(f, "</tr>")?;
+                    }
+                    write!(f, "</tbody>")?;
+                }
+                write!(f, "</table>")
+            }
         }
     }
 }
@@ -127,7 +153,6 @@ fn render_directive(
             write!(f, "<img src=\"{argument}\" alt=\"{alt}\" />")
         }
         _ => {
-            // Unknown directive - render as div with class
             write!(f, "<div class=\"directive directive-{name}\">")?;
             if !argument.is_empty() {
                 write!(f, "<p><code>{}</code></p>", html_escape(argument))?;
