@@ -103,6 +103,14 @@ cargo fmt --all -- --check
 | `html_of(input: &str)`     | Parses and renders the input as HTML.       |
 | `markdown_of(input: &str)` | Parses and renders the input as Markdown.   |
 
+### Types
+
+| Item         | Description                                                              |
+| ------------ | ------------------------------------------------------------------------ |
+| `Block`      | Top-level AST nodes such as headings, paragraphs, directives, etc.       |
+| `Inline`     | Inline nodes nested inside `Block` variants                              |
+| `ListKind`   | Enum describing list flavor (`Ordered` or `Unordered`) for `Block::List` |
+
 ## License
 
 See [MIT License](./LICENSE) or learn [more here](https://opensource.org/license/mit)
@@ -110,8 +118,8 @@ See [MIT License](./LICENSE) or learn [more here](https://opensource.org/license
 ## Roadmap
 
 - [x] Nested inline markup (e.g. `*bold and *italic* inside*`)
-- [ ] Support for `::` literal blocks
-- [ ] Directive syntax (`.. note::`, `.. code-block::`)
+- [x] Support for `::` literal blocks
+- [x] Directive syntax (`.. note::`, `.. code-block::`)
 - [ ] Comment and field list improvements
 - [ ] Table parsing (simple & grid)
 - [ ] Feature Flags

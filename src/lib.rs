@@ -726,6 +726,115 @@ fn try_parse_setext_heading(ls: &mut Lines<'_>) -> Option<Block> {
     Some(Block::Heading { level, inlines })
 }
 
+/// Try to parse a literal block (::)
+fn try_parse_literal_block(ls: &mut Lines<'_>) -> Option<Block> {
+    let line = ls.peek()?;
+    if line.raw.trim() != "::" {
+        return None;
+    }
+
+    ls.next();
+
+    let base_indent = if let Some(next_line) = ls.peek() {
+        if is_blank(next_line.raw) {
+            ls.next();
+            if let Some(content_line) = ls.peek() {
+                leading_indent(content_line.raw)
+            } else {
+                return Some(Block::LiteralBlock(String::new()));
+            }
+        } else {
+            leading_indent(next_line.raw)
+        }
+    } else {
+        return Some(Block::LiteralBlock(String::new()));
+    };
+
+    let mut buf = String::new();
+    while let Some(l) = ls.peek() {
+        if is_blank(l.raw) {
+            if let Some(next) = ls.peek_next() {
+                if !is_blank(next.raw) && leading_indent(next.raw) < base_indent {
+                    break;
+                }
+            }
+            buf.push('\n');
+            ls.next();
+        } else if leading_indent(l.raw) >= base_indent {
+            let content = strip_indent_preserve(ls.next().unwrap().raw, base_indent);
+            buf.push_str(content);
+            buf.push('\n');
+        } else {
+            break;
+        }
+    }
+
+    Some(Block::LiteralBlock(buf.trim_end().to_string()))
+}
+
+/// Try to parse a directive (.. name:: argument)
+fn try_parse_directive(ls: &mut Lines<'_>) -> Result<Option<Block>, ParseError> {
+    let line = ls.peek().ok_or(ParseError::Eof)?;
+    let trimmed = line.raw.trim_start();
+
+    if !trimmed.starts_with(".. ") {
+        return Ok(None);
+    }
+
+    let after_dots = &trimmed[3..];
+
+    let Some(double_colon_idx) = after_dots.find("::") else {
+        return Ok(None);
+    };
+
+    let name = after_dots[..double_colon_idx].trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+
+    let argument = after_dots[double_colon_idx + 2..].trim().to_string();
+
+    let base_indent = leading_indent(line.raw);
+    ls.next();
+
+    if let Some(next) = ls.peek() {
+        if is_blank(next.raw) {
+            ls.next();
+        }
+    }
+
+    let mut content_text = String::new();
+    let content_indent = base_indent + 4;
+
+    while let Some(l) = ls.peek() {
+        if is_blank(l.raw) {
+            if let Some(next) = ls.peek_next() {
+                if !is_blank(next.raw) && leading_indent(next.raw) < content_indent {
+                    break;
+                }
+            }
+            content_text.push('\n');
+            ls.next();
+        } else if leading_indent(l.raw) >= content_indent {
+            let stripped = strip_indent_preserve(ls.next().unwrap().raw, content_indent);
+            content_text.push_str(stripped);
+            content_text.push('\n');
+        } else {
+            break;
+        }
+    }
+
+    let content = if content_text.trim().is_empty() {
+        Vec::new()
+    } else if name == "code-block" || name == "code" {
+        vec![Block::LiteralBlock(content_text.trim_end().to_string())]
+    } else {
+        parse(&content_text)?
+    };
+
+    Ok(Some(Block::Directive { name: name.to_string(), argument, content }))
+}
+
 /// Check if a line starts a new block (not a paragraph continuation)
 fn starts_new_block(line: &str) -> bool {
     is_blank(line) || list_kind(line).is_some() || line.trim() == "```" || line.trim_start().starts_with('>')
@@ -776,6 +885,11 @@ pub fn parse(input: &str) -> Result<Vec<Block>, ParseError> {
             continue;
         }
 
+        if let Some(block) = try_parse_directive(&mut ls)? {
+            blocks.push(block);
+            continue;
+        }
+
         if let Some(field_blocks) = parse_field_entries(&mut ls)? {
             blocks.extend(field_blocks);
             continue;
@@ -796,6 +910,11 @@ pub fn parse(input: &str) -> Result<Vec<Block>, ParseError> {
             continue;
         } else {
             ls.backtrack();
+        }
+
+        if let Some(block) = try_parse_literal_block(&mut ls) {
+            blocks.push(block);
+            continue;
         }
 
         if let Some(block) = parse_paragraph(&mut ls) {
@@ -1246,5 +1365,181 @@ code
         let html = ast::join_inlines(&parse_inlines(line));
         assert!(html.contains("<strong>strong with <em>emphasis</em> inside</strong>"));
         assert!(html.contains("<em>emphasis with <strong>strong</strong> inside</em>"));
+    }
+
+    #[test]
+    fn parses_standalone_literal_block() {
+        let doc = r#"
+::
+
+    This is a literal block.
+    It preserves    spacing.
+    <html> is escaped.
+"#;
+        let ast = parse(doc).unwrap();
+        assert_eq!(ast.len(), 1);
+        match &ast[0] {
+            Block::LiteralBlock(code) => {
+                assert!(code.contains("This is a literal block"));
+                assert!(code.contains("preserves    spacing"));
+                assert!(code.contains("<html>"));
+            }
+            _ => panic!("expected LiteralBlock"),
+        }
+
+        let html = html_of(doc);
+        assert!(html.contains("<pre><code>"));
+        assert!(html.contains("&lt;html&gt;"));
+    }
+
+    #[test]
+    fn parses_directive_note() {
+        let doc = r#"
+.. note::
+
+    This is a note directive.
+    It can have multiple paragraphs.
+"#;
+        let ast = parse(doc).unwrap();
+        assert_eq!(ast.len(), 1);
+        match &ast[0] {
+            Block::Directive { name, argument, content } => {
+                assert_eq!(name, "note");
+                assert_eq!(argument, "");
+                assert_eq!(content.len(), 1);
+            }
+            _ => panic!("expected Directive"),
+        }
+
+        let html = html_of(doc);
+        assert!(html.contains("<div class=\"admonition note\">"));
+        assert!(html.contains("<p class=\"admonition-title\">Note</p>"));
+        assert!(html.contains("This is a note directive"));
+    }
+
+    #[test]
+    fn parses_directive_warning() {
+        let doc = ".. warning::\n\n    Be careful!";
+        let ast = parse(doc).unwrap();
+
+        match &ast[0] {
+            Block::Directive { name, .. } => {
+                assert_eq!(name, "warning");
+            }
+            _ => panic!("expected Directive"),
+        }
+
+        let html = html_of(doc);
+        assert!(html.contains("<div class=\"admonition warning\">"));
+        assert!(html.contains("<p class=\"admonition-title\">Warning</p>"));
+    }
+
+    #[test]
+    fn parses_directive_code_block() {
+        let doc = r#"
+.. code-block:: python
+
+    def hello():
+        print("world")
+"#;
+        let ast = parse(doc).unwrap();
+        assert_eq!(ast.len(), 1);
+        match &ast[0] {
+            Block::Directive { name, argument, content } => {
+                assert_eq!(name, "code-block");
+                assert_eq!(argument, "python");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    Block::LiteralBlock(code) => {
+                        assert!(code.contains("def hello()"));
+                        assert!(code.contains("print(\"world\")"));
+                    }
+                    _ => panic!("expected LiteralBlock in code-block content"),
+                }
+            }
+            _ => panic!("expected Directive"),
+        }
+
+        let html = html_of(doc);
+        assert!(html.contains("<pre><code class=\"language-python\">"));
+        assert!(html.contains("def hello()"));
+    }
+
+    #[test]
+    fn parses_directive_image() {
+        let doc = ".. image:: /path/to/image.png";
+        let ast = parse(doc).unwrap();
+
+        match &ast[0] {
+            Block::Directive { name, argument, content } => {
+                assert_eq!(name, "image");
+                assert_eq!(argument, "/path/to/image.png");
+                assert_eq!(content.len(), 0);
+            }
+            _ => panic!("expected Directive"),
+        }
+
+        let html = html_of(doc);
+        assert!(html.contains("<img src=\"/path/to/image.png\""));
+    }
+
+    #[test]
+    fn multiple_directives_in_sequence() {
+        let doc = r#"
+.. note::
+
+    First note.
+
+.. warning::
+
+    A warning.
+
+.. code-block:: rust
+
+    fn main() {}
+"#;
+        let ast = parse(doc).unwrap();
+        assert_eq!(ast.len(), 3);
+        assert!(matches!(&ast[0], Block::Directive { name, .. } if name == "note"));
+        assert!(matches!(&ast[1], Block::Directive { name, .. } if name == "warning"));
+        assert!(matches!(&ast[2], Block::Directive { name, .. } if name == "code-block"));
+    }
+
+    #[test]
+    fn literal_block_preserves_indentation() {
+        let doc = "::
+
+    Line 1
+        Indented line 2
+            More indented line 3";
+        let ast = parse(doc).unwrap();
+        match &ast[0] {
+            Block::LiteralBlock(code) => {
+                assert!(code.contains("Line 1"));
+                assert!(code.contains("    Indented line 2"));
+                assert!(code.contains("        More indented line 3"));
+            }
+            _ => panic!("expected LiteralBlock"),
+        }
+    }
+
+    #[test]
+    fn directive_with_blank_lines_in_content() {
+        let doc = r#"
+.. note::
+
+    First paragraph.
+
+    Second paragraph after blank.
+"#;
+        let ast = parse(doc).unwrap();
+        match &ast[0] {
+            Block::Directive { content, .. } => {
+                assert_eq!(content.len(), 2);
+                assert!(matches!(&content[0], Block::Paragraph(_)));
+                assert!(matches!(&content[1], Block::Paragraph(_)));
+            }
+            _ => panic!("expected Directive"),
+        }
     }
 }

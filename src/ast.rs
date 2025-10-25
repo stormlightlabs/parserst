@@ -37,11 +37,23 @@ pub fn html_escape(s: &str) -> String {
 /// required for downstream renderers.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
-    Heading { level: u8, inlines: Vec<Inline> },
+    Heading {
+        level: u8,
+        inlines: Vec<Inline>,
+    },
     Paragraph(Vec<Inline>),
-    List { kind: ListKind, items: Vec<Vec<Inline>> },
+    List {
+        kind: ListKind,
+        items: Vec<Vec<Inline>>,
+    },
     CodeBlock(String),
     Quote(Vec<Block>),
+    LiteralBlock(String),
+    Directive {
+        name: String,
+        argument: String,
+        content: Vec<Block>,
+    },
 }
 
 impl std::fmt::Display for Block {
@@ -75,7 +87,64 @@ impl std::fmt::Display for Block {
                 }
                 write!(f, "</blockquote>")
             }
+            Block::LiteralBlock(code) => {
+                write!(f, "<pre><code>{}</code></pre>", html_escape(code))
+            }
+            Block::Directive { name, argument, content } => render_directive(f, name, argument, content),
         }
+    }
+}
+
+/// Render directive to HTML based on directive type
+fn render_directive(
+    f: &mut std::fmt::Formatter<'_>, name: &str, argument: &str, content: &[Block],
+) -> std::fmt::Result {
+    match name {
+        "note" | "warning" | "tip" | "caution" | "danger" | "attention" | "important" => {
+            let class = name;
+            write!(f, "<div class=\"admonition {class}\">")?;
+            write!(f, "<p class=\"admonition-title\">{}</p>", capitalize(name))?;
+            for block in content {
+                write!(f, "{block}")?;
+            }
+            write!(f, "</div>")
+        }
+        "code-block" | "code" => {
+            let lang = if argument.is_empty() { "" } else { argument };
+            let lang_attr = if lang.is_empty() { String::new() } else { format!(" class=\"language-{lang}\"") };
+            write!(f, "<pre><code{lang_attr}>")?;
+            for block in content {
+                if let Block::LiteralBlock(code) = block {
+                    write!(f, "{}", html_escape(code))?;
+                } else if let Block::Paragraph(inlines) = block {
+                    write!(f, "{}", join_inlines(inlines))?;
+                }
+            }
+            write!(f, "</code></pre>")
+        }
+        "image" => {
+            let alt = if content.is_empty() { String::new() } else { "image".to_string() };
+            write!(f, "<img src=\"{argument}\" alt=\"{alt}\" />")
+        }
+        _ => {
+            // Unknown directive - render as div with class
+            write!(f, "<div class=\"directive directive-{name}\">")?;
+            if !argument.is_empty() {
+                write!(f, "<p><code>{}</code></p>", html_escape(argument))?;
+            }
+            for block in content {
+                write!(f, "{block}")?;
+            }
+            write!(f, "</div>")
+        }
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
     }
 }
 
