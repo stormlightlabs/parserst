@@ -3,8 +3,12 @@ name = "parserst"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+markdown = ["dep:html2md"]
+
 [dependencies]
-html2md = "0.2.15"
+html2md = { version = "0.2.15", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.17"
 

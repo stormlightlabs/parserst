@@ -1,7 +1,10 @@
 //! Recursive descent reStructuredText parser that targets a lightweight AST.
 //!
 //! The crate exposes helpers to parse raw docstrings into [`Block`] nodes via [`parse`],
-//! render them as HTML with [`html_of`], or normalize them into Markdown using [`markdown_of`].
+//! and render them as HTML with [`html_of`].
+//!
+//! When the `markdown` feature is enabled, you can also normalize docstrings into
+//! Markdown using [`markdown_of`].
 //!
 //! The internal parser is intentionally small and resilient enough to handle the
 //! eclectic docstring styles used in the Python ecosystem.
@@ -126,6 +129,7 @@ fn underline_level(s: &str) -> Option<u8> {
     }
 }
 
+#[cfg(feature = "markdown")]
 fn normalize_docstring(input: &str) -> String {
     let trimmed = input.trim_matches(|c| c == '\n' || c == '\r');
     if trimmed.is_empty() {
@@ -522,6 +526,9 @@ pub fn html_of(input: &str) -> String {
 ///
 /// The string is first normalized to a reStructuredText subset understood by this crate,
 /// rendered to HTML via [`html_of`], and finally converted back to Markdown through [html2md].
+///
+/// This function is only available when the `markdown` feature is enabled.
+#[cfg(feature = "markdown")]
 pub fn markdown_of(input: &str) -> String {
     let normalized = normalize_docstring(input);
     let html = &html_of(&normalized);
@@ -719,6 +726,7 @@ A paragraph with *emphasis*, **strong**, and `code`.
     }
 
     #[test]
+    #[cfg(feature = "markdown")]
     fn markdown_of_round_trips_to_markdown() {
         let doc = "Heading\n=======\n\n- Item 1\n- Item 2";
         let markdown = markdown_of(doc);
@@ -795,6 +803,7 @@ A paragraph with *emphasis*, **strong**, and `code`.
     }
 
     #[test]
+    #[cfg(feature = "markdown")]
     fn markdown_of_converts_docstring_sections() {
         let doc = r#"
         Summary line.

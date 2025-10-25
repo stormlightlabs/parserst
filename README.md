@@ -20,10 +20,10 @@ This crate is ideal for:
 | --------------------- | --------------------------------------------------------------------------------------- |
 | **Inline parsing**    | Supports `*emphasis*`, `**strong**`, `` `code` ``, and `` `link <https://...>`_``.      |
 | **Block parsing**     | Detects headings, paragraphs, lists (ordered/unordered), code fences, and quote blocks. |
-| **Output**            | Render to **HTML** or **Markdown** using built-in formatters.                           |
+| **Output**            | Render to **HTML** (always available) or **Markdown** (requires `markdown` feature).    |
 | **AST Access**        | Exposes a clean, typed AST (`Block`, `Inline`, `ListKind`) for custom rendering.        |
 | **Error Handling**    | Safe `Result<Vec<Block>, ParseError>` API with detailed line numbers.                   |
-| **Zero dependencies** | No external parser frameworks or macros                                                 |
+| **Zero dependencies** | No external parser frameworks or macros (Markdown support is optional)                  |
 
 ## Installation
 
@@ -32,6 +32,9 @@ Add to your `Cargo.toml`:
 ```toml
 [dependencies]
 parserst = "0.1"
+
+# Or with markdown support
+parserst = { version = "0.1", features = ["markdown"] }
 ```
 
 Then import it:
@@ -88,6 +91,19 @@ This is *emphasized*, **bold**, and ``inline code``.
 cargo test
 ```
 
+Test with specific feature configurations:
+
+```bash
+# Test without markdown feature
+cargo test --no-default-features
+
+# Test with markdown feature
+cargo test --features markdown
+
+# Test with all features
+cargo test --all-features
+```
+
 You can also run style and performance checks:
 
 ```bash
@@ -95,13 +111,56 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
+## Building
+
+Build the library with different feature configurations:
+
+```bash
+# Default build (no markdown support)
+cargo build
+
+# Build with markdown feature
+cargo build --features markdown
+
+# Build without any features
+cargo build --no-default-features
+
+# Release build with all features
+cargo build --release --all-features
+```
+
+Using `just` (if you have [just](https://github.com/casey/just) installed):
+
+```bash
+# Run all tests
+just test
+
+# Test specific configurations
+just test-no-markdown
+just test-markdown
+just test-all
+
+# Build variants
+just build              # Default build
+just build-markdown     # With markdown feature
+just build-no-markdown  # Without any features
+just build-all          # With all features
+just build-release      # Release build
+just build-release-all  # Release with all features
+
+# Other commands
+just lint               # Run clippy
+just fmt                # Format code
+just coverage           # Generate coverage report
+```
+
 ## API Overview
 
-| Function                   | Description                                 |
-| -------------------------- | ------------------------------------------- |
-| `parse(input: &str)`       | Parses `.rst` text into a `Vec<Block>` AST. |
-| `html_of(input: &str)`     | Parses and renders the input as HTML.       |
-| `markdown_of(input: &str)` | Parses and renders the input as Markdown.   |
+| Function                   | Description                                                     |
+| -------------------------- | --------------------------------------------------------------- |
+| `parse(input: &str)`       | Parses `.rst` text into a `Vec<Block>` AST.                     |
+| `html_of(input: &str)`     | Parses and renders the input as HTML.                           |
+| `markdown_of(input: &str)` | Parses and renders the input as Markdown (requires `markdown` feature). |
 
 ### Types
 
@@ -117,9 +176,9 @@ See [MIT License](./LICENSE) or learn [more here](https://opensource.org/license
 
 ## Roadmap
 
-- [ ] Feature Flags
-    - [ ] `markdown`|`md` - Markdown behind flag
-    - [ ] `serde` feature for AST serialization
+- [x] Feature Flags
+    - [x] `markdown` - Markdown support behind feature flag
+    - [ ] `serde` - AST serialization support
 
 ---
 
