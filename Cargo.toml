@@ -6,11 +6,16 @@ edition = "2024"
 [features]
 default = []
 markdown = ["dep:html2md"]
+serde = ["dep:serde"]
 
 [dependencies]
 html2md = { version = "0.2.15", optional = true }
-serde = { version = "1.0.228", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"], optional = true }
 thiserror = "2.0.17"
+
+[dev-dependencies]
+serde_json = "1.0.145"
+serde_yml = "0.0.11"
 
 [lints.clippy]
 bool_comparison = "deny"

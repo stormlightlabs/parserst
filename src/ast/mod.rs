@@ -1,6 +1,7 @@
 mod definitions;
 mod inlines;
 mod lists;
+mod ser;
 mod table;
 
 pub use definitions::{parse_definition_entries, parse_field_entries};
@@ -12,6 +13,7 @@ pub use table::{try_parse_grid_table, try_parse_simple_table};
 ///
 /// These are rendered directly to HTML via [`std::fmt::Display`] and are reused by both the HTML and Markdown pipelines.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Inline {
     Text(String),
     Em(Vec<Inline>),
@@ -45,6 +47,7 @@ pub fn html_escape(s: &str) -> String {
 /// Fields consist of a name (e.g., "param"), an optional argument (e.g., "x"),
 /// and a body containing nested block content.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Field {
     pub name: String,
     pub argument: String,
@@ -56,6 +59,7 @@ pub struct Field {
 /// Blocks embed [`Inline`] nodes where appropriate and carry the semantic shape
 /// required for downstream renderers.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Block {
     Heading {
         level: u8,

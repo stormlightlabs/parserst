@@ -2,6 +2,7 @@ use crate::{Block, Inline, Lines};
 
 /// List flavor used by [`Block::List`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ListKind {
     Unordered,
     Ordered,

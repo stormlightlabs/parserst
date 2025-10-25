@@ -11,7 +11,7 @@
 
 mod ast;
 pub mod error;
-pub use ast::{Block, Inline, ListKind};
+pub use ast::{Block, Field, Inline, ListKind};
 pub use error::ParseError;
 
 #[derive(Debug, Clone, Copy)]

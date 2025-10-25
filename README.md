@@ -16,14 +16,15 @@ This crate is ideal for:
 
 ## Features
 
-| Category              | Description                                                                             |
-| --------------------- | --------------------------------------------------------------------------------------- |
-| **Inline parsing**    | Supports `*emphasis*`, `**strong**`, `` `code` ``, and `` `link <https://...>`_``.      |
-| **Block parsing**     | Detects headings, paragraphs, lists (ordered/unordered), code fences, and quote blocks. |
-| **Output**            | Render to **HTML** (always available) or **Markdown** (requires `markdown` feature).    |
-| **AST Access**        | Exposes a clean, typed AST (`Block`, `Inline`, `ListKind`) for custom rendering.        |
-| **Error Handling**    | Safe `Result<Vec<Block>, ParseError>` API with detailed line numbers.                   |
-| **Zero dependencies** | No external parser frameworks or macros (Markdown support is optional)                  |
+| Category              | Description                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------------ |
+| **Inline parsing**    | Supports `*emphasis*`, `**strong**`, `` `code` ``, and `` `link <https://...>`_``.               |
+| **Block parsing**     | Detects headings, paragraphs, lists (ordered/unordered), code fences, and quote blocks.          |
+| **Output**            | Render to **HTML** (always available) or **Markdown** (requires `markdown` feature).             |
+| **Serialization**     | Serialize AST to JSON, YAML, or any serde-supported format (requires `serde` feature).           |
+| **AST Access**        | Exposes a clean, typed AST (`Block`, `Inline`, `Field`, `ListKind`) for custom rendering.        |
+| **Error Handling**    | Safe `Result<Vec<Block>, ParseError>` API with detailed line numbers.                            |
+| **Minimal deps**      | No external parser frameworks or macros; all features are optional and can be enabled as needed. |
 
 ## Installation
 
@@ -33,14 +34,14 @@ Add to your `Cargo.toml`:
 [dependencies]
 parserst = "0.1"
 
-# Or with markdown support
+# With markdown support
 parserst = { version = "0.1", features = ["markdown"] }
-```
 
-Then import it:
+# With serde serialization support
+parserst = { version = "0.1", features = ["serde"] }
 
-```rust
-use parserst::{html_of, parse};
+# With all features
+parserst = { version = "0.1", features = ["markdown", "serde"] }
 ```
 
 ## Example
@@ -78,6 +79,8 @@ This is *emphasized*, **bold**, and ``inline code``.
 </ul>
 ```
 
+The AST can be serialized to any format supported by serde: JSON, YAML, TOML, MessagePack, etc.
+
 ## Design
 
 - **Recursive Descent** — every rule is expressed in idiomatic Rust, not macros.
@@ -85,7 +88,7 @@ This is *emphasized*, **bold**, and ``inline code``.
 - **Composabe** — easy to extend or replace the renderer layer (e.g., to JSON, Markdown, or AST tools).
 - **No Unsafe** — guaranteed safe Rust implementation.
 
-## Testing
+## Tests & Builds
 
 ```bash
 cargo test
@@ -94,91 +97,50 @@ cargo test
 Test with specific feature configurations:
 
 ```bash
-# Test without markdown feature
+# Without any features
 cargo test --no-default-features
+cargo build --no-default-features # or cargo build
 
-# Test with markdown feature
+# With markdown
 cargo test --features markdown
-
-# Test with all features
-cargo test --all-features
-```
-
-You can also run style and performance checks:
-
-```bash
-cargo clippy --all-targets -- -D warnings
-cargo fmt --all -- --check
-```
-
-## Building
-
-Build the library with different feature configurations:
-
-```bash
-# Default build (no markdown support)
-cargo build
-
-# Build with markdown feature
 cargo build --features markdown
 
-# Build without any features
-cargo build --no-default-features
+# With serde
+cargo test --features serde
+cargo build --features serde
 
-# Release build with all features
+# All features
+cargo test --all-features
 cargo build --release --all-features
 ```
 
 Using `just` (if you have [just](https://github.com/casey/just) installed):
 
 ```bash
-# Run all tests
-just test
-
-# Test specific configurations
-just test-no-markdown
-just test-markdown
-just test-all
-
-# Build variants
-just build              # Default build
-just build-markdown     # With markdown feature
-just build-no-markdown  # Without any features
-just build-all          # With all features
-just build-release      # Release build
-just build-release-all  # Release with all features
-
-# Other commands
-just lint               # Run clippy
-just fmt                # Format code
-just coverage           # Generate coverage report
+# View all recipes
+just -l
 ```
 
 ## API Overview
 
-| Function                   | Description                                                     |
-| -------------------------- | --------------------------------------------------------------- |
-| `parse(input: &str)`       | Parses `.rst` text into a `Vec<Block>` AST.                     |
-| `html_of(input: &str)`     | Parses and renders the input as HTML.                           |
+| Function                   | Description                                                             |
+| -------------------------- | ----------------------------------------------------------------------- |
+| `parse(input: &str)`       | Parses `.rst` text into a `Vec<Block>` AST.                             |
+| `html_of(input: &str)`     | Parses and renders the input as HTML.                                   |
 | `markdown_of(input: &str)` | Parses and renders the input as Markdown (requires `markdown` feature). |
 
 ### Types
 
-| Item         | Description                                                              |
-| ------------ | ------------------------------------------------------------------------ |
-| `Block`      | Top-level AST nodes such as headings, paragraphs, directives, etc.       |
-| `Inline`     | Inline nodes nested inside `Block` variants                              |
-| `ListKind`   | Enum describing list flavor (`Ordered` or `Unordered`) for `Block::List` |
+| Item         | Description                                                                             |
+| ------------ | --------------------------------------------------------------------------------------- |
+| `Block`      | Top-level AST nodes such as headings, paragraphs, directives, field lists, tables, etc. |
+| `Inline`     | Inline nodes nested inside `Block` variants (text, emphasis, strong, code, links)       |
+| `Field`      | A field entry within a field list (e.g., `:param x: description`)                       |
+| `ListKind`   | Enum describing list flavor (`Ordered` or `Unordered`) for `Block::List`                |
 
 ## License
 
 See [MIT License](./LICENSE) or learn [more here](https://opensource.org/license/mit)
-
-## Roadmap
-
-- [x] Feature Flags
-    - [x] `markdown` - Markdown support behind feature flag
-    - [ ] `serde` - AST serialization support
 
 ---
 
