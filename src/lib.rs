@@ -1,86 +1,15 @@
-//! Recursive descent based parser for reStructuredText
+//! Recursive descent reStructuredText parser that targets a lightweight AST.
+//!
+//! The crate exposes helpers to parse raw docstrings into [`Block`] nodes via [`parse`],
+//! render them as HTML with [`html_of`], or normalize them into Markdown using [`markdown_of`].
+//!
+//! The internal parser is intentionally small and resilient enough to handle the
+//! eclectic docstring styles used in the Python ecosystem.
 
-use std::fmt;
-use thiserror::Error;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Inline {
-    Text(String),
-    Em(Vec<Inline>),
-    Strong(Vec<Inline>),
-    Code(String),
-    Link { text: Vec<Inline>, url: String },
-}
-
-impl fmt::Display for Inline {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Inline::Text(t) => write!(f, "{t}"),
-            Inline::Em(children) => write!(f, "<em>{}</em>", join_inlines(children)),
-            Inline::Strong(children) => write!(f, "<strong>{}</strong>", join_inlines(children)),
-            Inline::Code(t) => write!(f, "<code>{}</code>", html_escape(t)),
-            Inline::Link { text, url } => write!(f, "<a href=\"{url}\">{}</a>", join_inlines(text)),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Block {
-    Heading { level: u8, inlines: Vec<Inline> },
-    Paragraph(Vec<Inline>),
-    List { kind: ListKind, items: Vec<Vec<Inline>> },
-    CodeBlock(String),
-    Quote(Vec<Block>),
-}
-
-impl fmt::Display for Block {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Block::Heading { level, inlines } => {
-                let tag = match level {
-                    1 => "h1",
-                    2 => "h2",
-                    _ => "h2",
-                };
-                write!(f, "<{}>{}</{}>", tag, join_inlines(inlines), tag)
-            }
-            Block::Paragraph(inl) => write!(f, "<p>{}</p>", join_inlines(inl)),
-            Block::List { kind, items } => {
-                let tag = match kind {
-                    ListKind::Unordered => "ul",
-                    ListKind::Ordered => "ol",
-                };
-                write!(f, "<{tag}>")?;
-                for it in items {
-                    write!(f, "<li>{}</li>", join_inlines(it))?;
-                }
-                write!(f, "</{tag}>")
-            }
-            Block::CodeBlock(code) => write!(f, "<pre><code>{}</code></pre>", html_escape(code)),
-            Block::Quote(children) => {
-                write!(f, "<blockquote>")?;
-                for b in children {
-                    write!(f, "{b}")?;
-                }
-                write!(f, "</blockquote>")
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ListKind {
-    Unordered,
-    Ordered,
-}
-
-#[derive(Debug, Error)]
-pub enum ParseError {
-    #[error("unexpected end of input")]
-    Eof,
-    #[error("invalid syntax at line {line}: {msg}")]
-    Invalid { line: usize, msg: String },
-}
+mod ast;
+pub mod error;
+pub use ast::{Block, Inline, ListKind};
+pub use error::ParseError;
 
 #[derive(Debug, Clone, Copy)]
 struct Line<'a> {
@@ -672,14 +601,6 @@ fn parse_inlines(text: &str) -> Vec<Inline> {
     out
 }
 
-fn join_inlines(v: &[Inline]) -> String {
-    v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("")
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-}
-
 fn normalize_docstring(input: &str) -> String {
     let trimmed = input.trim_matches(|c| c == '\n' || c == '\r');
     if trimmed.is_empty() {
@@ -824,6 +745,12 @@ fn parse_paragraph(ls: &mut Lines<'_>) -> Option<Block> {
     if text.is_empty() { None } else { Some(Block::Paragraph(parse_inlines(text))) }
 }
 
+/// Parse raw reStructuredText-like input into a vector of [`Block`] nodes.
+///
+/// The parser walks the input top-to-bottom, attempting the most specific block constructs
+/// first (code fences, block quotes, lists, field lists, definition lists, headings) before
+/// falling back to paragraphs. When the stream cannot be consumed because of malformed markup,
+/// a [`ParseError`] is returned to the caller.
 pub fn parse(input: &str) -> Result<Vec<Block>, ParseError> {
     let mut ls = Lines::new(input);
     let mut blocks = Vec::new();
@@ -834,7 +761,6 @@ pub fn parse(input: &str) -> Result<Vec<Block>, ParseError> {
             break;
         }
 
-        // Try parsing different block types in priority order
         if let Some(block) = try_parse_code_fence(&mut ls) {
             blocks.push(block);
             continue;
@@ -872,7 +798,6 @@ pub fn parse(input: &str) -> Result<Vec<Block>, ParseError> {
             ls.backtrack();
         }
 
-        // Default to paragraph
         if let Some(block) = parse_paragraph(&mut ls) {
             blocks.push(block);
         }
@@ -881,6 +806,13 @@ pub fn parse(input: &str) -> Result<Vec<Block>, ParseError> {
     Ok(blocks)
 }
 
+/// Render the provided docstring to HTML by parsing it and concatenating the
+/// HTML representation of each [`Block`].
+///
+/// ## Panics
+///
+/// Panics if [`parse`] returns an error. Use [`parse`] directly when you need
+/// to surface parsing failures to your caller.
 pub fn html_of(input: &str) -> String {
     parse(input)
         .unwrap()
@@ -890,6 +822,10 @@ pub fn html_of(input: &str) -> String {
         .join("\n")
 }
 
+/// Convert docstrings that mix Google/Numpy/Sphinx conventions into Markdown.
+///
+/// The string is first normalized to a reStructuredText subset understood by this crate,
+/// rendered to HTML via [`html_of`], and finally converted back to Markdown through [html2md].
 pub fn markdown_of(input: &str) -> String {
     let normalized = normalize_docstring(input);
     let html = &html_of(&normalized);
@@ -1015,7 +951,7 @@ A paragraph with *emphasis*, **strong**, and `code`.
     fn parses_emphasis_and_strong() {
         let line = "A *word* and a **strong** one";
         let inl = parse_inlines(line);
-        let html = join_inlines(&inl);
+        let html = ast::join_inlines(&inl);
         assert!(html.contains("<em>word</em>"));
         assert!(html.contains("<strong>strong</strong>"));
     }
@@ -1023,21 +959,21 @@ A paragraph with *emphasis*, **strong**, and `code`.
     #[test]
     fn parses_inline_code() {
         let line = "Inline `code` works";
-        let html = join_inlines(&parse_inlines(line));
+        let html = ast::join_inlines(&parse_inlines(line));
         assert!(html.contains("<code>code</code>"));
     }
 
     #[test]
     fn parses_double_backtick_code() {
         let line = "Use ``inline`` literals";
-        let html = join_inlines(&parse_inlines(line));
+        let html = ast::join_inlines(&parse_inlines(line));
         assert!(html.contains("<code>inline</code>"));
     }
 
     #[test]
     fn parses_inline_link() {
         let line = "`example <https://example.com>`_";
-        let html = join_inlines(&parse_inlines(line));
+        let html = ast::join_inlines(&parse_inlines(line));
         assert!(html.contains("<a href=\"https://example.com\">example</a>"));
     }
 
@@ -1065,7 +1001,7 @@ A paragraph with *emphasis*, **strong**, and `code`.
     #[test]
     fn parses_mixed_inline_styles() {
         let line = "**bold** *em* `code` and `link <x>`_";
-        let html = join_inlines(&parse_inlines(line));
+        let html = ast::join_inlines(&parse_inlines(line));
         assert!(html.contains("<strong>bold</strong>"));
         assert!(html.contains("<em>em</em>"));
         assert!(html.contains("<code>code</code>"));
@@ -1218,7 +1154,7 @@ code
     #[test]
     fn html_escape_works() {
         let code = "<script>alert('x')</script>";
-        let esc = html_escape(code);
+        let esc = ast::html_escape(code);
         assert!(esc.contains("&lt;"));
         assert!(esc.contains("&gt;"));
         assert!(!esc.contains("<script>"));
@@ -1271,7 +1207,7 @@ code
     #[test]
     fn renders_nested_inline_markup_to_html() {
         let line = "**bold *italic* text**";
-        let html = join_inlines(&parse_inlines(line));
+        let html = ast::join_inlines(&parse_inlines(line));
         assert_eq!(html, "<strong>bold <em>italic</em> text</strong>");
     }
 
@@ -1307,7 +1243,7 @@ code
     #[test]
     fn multiple_levels_of_nesting() {
         let line = "**strong with *emphasis* inside** and *emphasis with **strong** inside*";
-        let html = join_inlines(&parse_inlines(line));
+        let html = ast::join_inlines(&parse_inlines(line));
         assert!(html.contains("<strong>strong with <em>emphasis</em> inside</strong>"));
         assert!(html.contains("<em>emphasis with <strong>strong</strong> inside</em>"));
     }
