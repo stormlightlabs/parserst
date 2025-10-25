@@ -1,0 +1,10 @@
+max_width = 120
+fn_params_layout = "Compressed"
+fn_single_line = true
+fn_args_layout = "Compressed"
+format_strings = true
+single_line_if_else_max_width = 100
+single_line_let_else_max_width = 100
+struct_field_align_threshold = 20
+use_field_init_shorthand = true
+struct_lit_width = 100
