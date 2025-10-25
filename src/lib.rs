@@ -6,20 +6,20 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Inline {
     Text(String),
-    Em(String),
-    Strong(String),
+    Em(Vec<Inline>),
+    Strong(Vec<Inline>),
     Code(String),
-    Link { text: String, url: String },
+    Link { text: Vec<Inline>, url: String },
 }
 
 impl fmt::Display for Inline {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Inline::Text(t) => write!(f, "{t}"),
-            Inline::Em(t) => write!(f, "<em>{t}</em>"),
-            Inline::Strong(t) => write!(f, "<strong>{t}</strong>"),
+            Inline::Em(children) => write!(f, "<em>{}</em>", join_inlines(children)),
+            Inline::Strong(children) => write!(f, "<strong>{}</strong>", join_inlines(children)),
             Inline::Code(t) => write!(f, "<code>{}</code>", html_escape(t)),
-            Inline::Link { text, url } => write!(f, "<a href=\"{url}\">{text}</a>"),
+            Inline::Link { text, url } => write!(f, "<a href=\"{url}\">{}</a>", join_inlines(text)),
         }
     }
 }
@@ -271,11 +271,11 @@ fn build_definition_blocks(term: &str, classifier: Option<&str>, body_text: &str
     let mut blocks = if body_text.trim().is_empty() { Vec::new() } else { parse(body_text)? };
 
     let mut label = Vec::new();
-    label.push(Inline::Strong(term.to_string()));
+    label.push(Inline::Strong(vec![Inline::Text(term.to_string())]));
     if let Some(classifier) = classifier {
         if !classifier.is_empty() {
             label.push(Inline::Text(" (".into()));
-            label.push(Inline::Em(classifier.to_string()));
+            label.push(Inline::Em(vec![Inline::Text(classifier.to_string())]));
             label.push(Inline::Text(")".into()));
         }
     }
@@ -438,7 +438,7 @@ fn field_label(kind: &str) -> String {
 
 fn build_field_label(kind: &str, arg: Option<&str>) -> Vec<Inline> {
     let mut inlines = Vec::new();
-    inlines.push(Inline::Strong(field_label(kind)));
+    inlines.push(Inline::Strong(vec![Inline::Text(field_label(kind))]));
     if let Some(arg) = arg {
         if !arg.is_empty() {
             inlines.push(Inline::Text(" ".into()));
@@ -567,7 +567,22 @@ fn underline_level(s: &str) -> Option<u8> {
     }
 }
 
-/// Inline recognizer that runs a linear scan, greedy where safe.
+/// Find closing single asterisk that is not part of a double asterisk
+fn find_single_asterisk_close(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    for i in 0..text.len() {
+        if bytes[i] == b'*' {
+            let before_is_asterisk = i > 0 && bytes[i - 1] == b'*';
+            let after_is_asterisk = i + 1 < bytes.len() && bytes[i + 1] == b'*';
+            if !before_is_asterisk && !after_is_asterisk {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
+/// Recursive descent parser for inline markup with nesting support.
 /// Handles **strong**, *em*, `code`, and `text <url>`_ references.
 fn parse_inlines(text: &str) -> Vec<Inline> {
     let mut out = Vec::new();
@@ -597,7 +612,8 @@ fn parse_inlines(text: &str) -> Vec<Inline> {
                 let inner = &text[i + 2..i + 2 + end];
                 if !inner.is_empty() {
                     flush_text(&mut buf, &mut out);
-                    out.push(Inline::Strong(inner.to_string()));
+                    let children = parse_inlines(inner);
+                    out.push(Inline::Strong(children));
                     i += 2 + end + 2;
                     continue;
                 }
@@ -605,11 +621,12 @@ fn parse_inlines(text: &str) -> Vec<Inline> {
         }
 
         if bytes[i] == b'*' {
-            if let Some(end) = text[i + 1..].find('*') {
+            if let Some(end) = find_single_asterisk_close(&text[i + 1..]) {
                 let inner = &text[i + 1..i + 1 + end];
                 if !inner.is_empty() {
                     flush_text(&mut buf, &mut out);
-                    out.push(Inline::Em(inner.to_string()));
+                    let children = parse_inlines(inner);
+                    out.push(Inline::Em(children));
                     i += 1 + end + 1;
                     continue;
                 }
@@ -620,6 +637,7 @@ fn parse_inlines(text: &str) -> Vec<Inline> {
             if let Some(end) = text[i + 1..].find('`') {
                 let closing_tick = i + 1 + end;
                 let after_tick = closing_tick + 1;
+
                 if after_tick < text.len() && bytes[after_tick] == b'_' {
                     let inner = &text[i + 1..closing_tick];
                     if let (Some(l), Some(r)) = (inner.find('<'), inner.rfind('>')) {
@@ -628,7 +646,8 @@ fn parse_inlines(text: &str) -> Vec<Inline> {
                             let url = inner[l + 1..r].trim();
                             if !label.is_empty() && !url.is_empty() {
                                 flush_text(&mut buf, &mut out);
-                                out.push(Inline::Link { text: label.to_string(), url: url.to_string() });
+                                let text_children = parse_inlines(label);
+                                out.push(Inline::Link { text: text_children, url: url.to_string() });
                                 i = after_tick + 1;
                                 continue;
                             }
@@ -649,9 +668,7 @@ fn parse_inlines(text: &str) -> Vec<Inline> {
         i += ch.len_utf8();
     }
 
-    if !buf.is_empty() {
-        out.push(Inline::Text(buf));
-    }
+    flush_text(&mut buf, &mut out);
     out
 }
 
@@ -661,15 +678,6 @@ fn join_inlines(v: &[Inline]) -> String {
 
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-}
-
-fn html_of(input: &str) -> String {
-    parse(input)
-        .unwrap()
-        .into_iter()
-        .map(|b| b.to_string())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn normalize_docstring(input: &str) -> String {
@@ -708,73 +716,138 @@ fn normalize_docstring(input: &str) -> String {
         .join("\n")
 }
 
+/// Skip blank lines in the input
+fn skip_blank_lines(ls: &mut Lines<'_>) {
+    while let Some(l) = ls.peek() {
+        if is_blank(l.raw) {
+            ls.next();
+        } else {
+            break;
+        }
+    }
+}
+
+/// Try to parse a code fence block (```)
+fn try_parse_code_fence(ls: &mut Lines<'_>) -> Option<Block> {
+    let l = ls.peek()?;
+    if l.raw.trim() != "```" {
+        return None;
+    }
+
+    ls.next();
+    let mut buf = String::new();
+    while let Some(inner) = ls.next() {
+        if inner.raw.trim() == "```" {
+            break;
+        }
+        buf.push_str(inner.raw);
+        buf.push('\n');
+    }
+    Some(Block::CodeBlock(buf))
+}
+
+/// Try to parse a quote block (>)
+fn try_parse_quote(ls: &mut Lines<'_>) -> Result<Option<Block>, ParseError> {
+    let l = ls.peek();
+    if !l.map(|l| l.raw.trim_start().starts_with('>')).unwrap_or(false) {
+        return Ok(None);
+    }
+
+    let mut quote = String::new();
+    while let Some(q) = ls.peek() {
+        let t = q.raw.trim_start();
+        if t.starts_with('>') {
+            ls.next();
+            quote.push_str(t.trim_start_matches("> ").trim_start_matches('>'));
+            quote.push('\n');
+        } else {
+            break;
+        }
+    }
+    let inner = parse(&quote)?;
+    Ok(Some(Block::Quote(inner)))
+}
+
+/// Try to parse a list (ordered or unordered)
+fn try_parse_list(ls: &mut Lines<'_>) -> Option<Block> {
+    let l = ls.peek()?;
+    let kind = list_kind(l.raw)?;
+
+    let mut items: Vec<Vec<Inline>> = Vec::new();
+    while let Some(it) = ls.peek() {
+        match list_kind(it.raw) {
+            Some(next_kind) if next_kind == kind => {
+                let line = ls.next().unwrap();
+                let content = strip_list_marker(line.raw, kind).unwrap().trim_end();
+                items.push(parse_inlines(content));
+            }
+            _ => break,
+        }
+    }
+    Some(Block::List { kind, items })
+}
+
+/// Try to parse a colon-style heading (Heading:)
+fn try_parse_colon_heading(ls: &mut Lines<'_>) -> Option<Block> {
+    let line = ls.peek()?;
+    let title = colon_heading_text(line, ls.peek_next())?;
+    ls.next();
+    Some(Block::Heading { level: 2, inlines: parse_inlines(&title) })
+}
+
+/// Try to parse a setext-style heading (underlined with = or -)
+fn try_parse_setext_heading(ls: &mut Lines<'_>) -> Option<Block> {
+    let title = ls.next()?;
+    let ul = ls.peek()?;
+    let level = underline_level(ul.raw)?;
+    ls.next();
+    let inlines = parse_inlines(title.raw.trim());
+    Some(Block::Heading { level, inlines })
+}
+
+/// Check if a line starts a new block (not a paragraph continuation)
+fn starts_new_block(line: &str) -> bool {
+    is_blank(line) || list_kind(line).is_some() || line.trim() == "```" || line.trim_start().starts_with('>')
+}
+
+/// Parse remaining content as a paragraph
+fn parse_paragraph(ls: &mut Lines<'_>) -> Option<Block> {
+    let mut buf = String::new();
+    while let Some(l) = ls.peek() {
+        if starts_new_block(l.raw) {
+            break;
+        }
+        buf.push_str(ls.next().unwrap().raw);
+        buf.push('\n');
+    }
+    let text = buf.trim_end();
+    if text.is_empty() { None } else { Some(Block::Paragraph(parse_inlines(text))) }
+}
+
 pub fn parse(input: &str) -> Result<Vec<Block>, ParseError> {
     let mut ls = Lines::new(input);
     let mut blocks = Vec::new();
 
     while !ls.is_eof() {
-        while let Some(l) = ls.peek() {
-            if is_blank(l.raw) {
-                ls.next();
-            } else {
-                break;
-            }
-        }
+        skip_blank_lines(&mut ls);
         if ls.is_eof() {
             break;
         }
 
-        if let Some(l) = ls.peek() {
-            if l.raw.trim() == "```" {
-                ls.next();
-                let mut buf = String::new();
-                while let Some(inner) = ls.next() {
-                    if inner.raw.trim() == "```" {
-                        break;
-                    }
-                    buf.push_str(inner.raw);
-                    buf.push('\n');
-                }
-                blocks.push(Block::CodeBlock(buf));
-                continue;
-            }
+        // Try parsing different block types in priority order
+        if let Some(block) = try_parse_code_fence(&mut ls) {
+            blocks.push(block);
+            continue;
         }
 
-        if let Some(l) = ls.peek() {
-            if l.raw.trim_start().starts_with('>') {
-                let mut quote = String::new();
-                while let Some(q) = ls.peek() {
-                    let t = q.raw.trim_start();
-                    if t.starts_with('>') {
-                        ls.next();
-                        quote.push_str(t.trim_start_matches("> ").trim_start_matches('>'));
-                        quote.push('\n');
-                    } else {
-                        break;
-                    }
-                }
-                let inner = parse(&quote)?;
-                blocks.push(Block::Quote(inner));
-                continue;
-            }
+        if let Some(block) = try_parse_quote(&mut ls)? {
+            blocks.push(block);
+            continue;
         }
 
-        if let Some(l) = ls.peek() {
-            if let Some(kind) = list_kind(l.raw) {
-                let mut items: Vec<Vec<Inline>> = Vec::new();
-                while let Some(it) = ls.peek() {
-                    match list_kind(it.raw) {
-                        Some(next_kind) if next_kind == kind => {
-                            let line = ls.next().unwrap();
-                            let content = strip_list_marker(line.raw, kind).unwrap().trim_end();
-                            items.push(parse_inlines(content));
-                        }
-                        _ => break,
-                    }
-                }
-                blocks.push(Block::List { kind, items });
-                continue;
-            }
+        if let Some(block) = try_parse_list(&mut ls) {
+            blocks.push(block);
+            continue;
         }
 
         if let Some(field_blocks) = parse_field_entries(&mut ls)? {
@@ -787,45 +860,34 @@ pub fn parse(input: &str) -> Result<Vec<Block>, ParseError> {
             continue;
         }
 
-        if let Some(line) = ls.peek() {
-            if let Some(title) = colon_heading_text(line, ls.peek_next()) {
-                ls.next();
-                blocks.push(Block::Heading { level: 2, inlines: parse_inlines(&title) });
-                continue;
-            }
+        if let Some(block) = try_parse_colon_heading(&mut ls) {
+            blocks.push(block);
+            continue;
         }
 
-        if let Some(title) = ls.next() {
-            if let Some(ul) = ls.peek() {
-                if let Some(level) = underline_level(ul.raw) {
-                    ls.next(); // consume underline
-                    let inlines = parse_inlines(title.raw.trim());
-                    blocks.push(Block::Heading { level, inlines });
-                    continue;
-                }
-            }
+        if let Some(block) = try_parse_setext_heading(&mut ls) {
+            blocks.push(block);
+            continue;
+        } else {
             ls.backtrack();
         }
 
-        let mut buf = String::new();
-        while let Some(l) = ls.peek() {
-            if is_blank(l.raw)
-                || list_kind(l.raw).is_some()
-                || l.raw.trim() == "```"
-                || l.raw.trim_start().starts_with('>')
-            {
-                break;
-            }
-            buf.push_str(ls.next().unwrap().raw);
-            buf.push('\n');
-        }
-        let text = buf.trim_end();
-        if !text.is_empty() {
-            blocks.push(Block::Paragraph(parse_inlines(text)));
+        // Default to paragraph
+        if let Some(block) = parse_paragraph(&mut ls) {
+            blocks.push(block);
         }
     }
 
     Ok(blocks)
+}
+
+pub fn html_of(input: &str) -> String {
+    parse(input)
+        .unwrap()
+        .into_iter()
+        .map(|b| b.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn markdown_of(input: &str) -> String {
@@ -994,7 +1056,7 @@ A paragraph with *emphasis*, **strong**, and `code`.
             inl,
             vec![
                 Inline::Text("Read ".into()),
-                Inline::Link { text: "docs".into(), url: "https://example.com".into() },
+                Inline::Link { text: vec![Inline::Text("docs".into())], url: "https://example.com".into() },
                 Inline::Text(" now.".into())
             ]
         );
@@ -1040,7 +1102,7 @@ A paragraph with *emphasis*, **strong**, and `code`.
         assert!(matches!(ast.len(), 2));
         match &ast[0] {
             Block::Paragraph(inlines) => {
-                assert_eq!(inlines[0], Inline::Strong("Parameter".into()));
+                assert_eq!(inlines[0], Inline::Strong(vec![Inline::Text("Parameter".into())]));
                 assert_eq!(inlines[1], Inline::Text(" ".into()));
                 assert_eq!(inlines[2], Inline::Code("foo".into()));
             }
@@ -1056,8 +1118,12 @@ A paragraph with *emphasis*, **strong**, and `code`.
         assert!(matches!(ast[0], Block::Heading { .. }));
         match &ast[1] {
             Block::Paragraph(inlines) => {
-                assert_eq!(inlines[0], Inline::Strong("foo".into()));
-                assert!(inlines.iter().any(|i| *i == Inline::Em("int".into())));
+                assert_eq!(inlines[0], Inline::Strong(vec![Inline::Text("foo".into())]));
+                assert!(
+                    inlines
+                        .iter()
+                        .any(|i| *i == Inline::Em(vec![Inline::Text("int".into())]))
+                );
             }
             _ => panic!("expected paragraph for numpy definition"),
         }
@@ -1077,14 +1143,18 @@ A paragraph with *emphasis*, **strong**, and `code`.
         }
         match &ast[1] {
             Block::Paragraph(inlines) => {
-                assert_eq!(inlines[0], Inline::Strong("foo".into()));
-                assert!(inlines.iter().any(|i| *i == Inline::Em("int".into())));
+                assert_eq!(inlines[0], Inline::Strong(vec![Inline::Text("foo".into())]));
+                assert!(
+                    inlines
+                        .iter()
+                        .any(|i| *i == Inline::Em(vec![Inline::Text("int".into())]))
+                );
             }
             _ => panic!("expected first definition paragraph"),
         }
         match &ast[2] {
             Block::Paragraph(inlines) => {
-                assert_eq!(inlines[0], Inline::Strong("bar".into()));
+                assert_eq!(inlines[0], Inline::Strong(vec![Inline::Text("bar".into())]));
             }
             _ => panic!("expected second definition paragraph"),
         }
@@ -1152,5 +1222,93 @@ code
         assert!(esc.contains("&lt;"));
         assert!(esc.contains("&gt;"));
         assert!(!esc.contains("<script>"));
+    }
+
+    #[test]
+    fn parses_nested_strong_with_emphasis() {
+        let line = "**bold *italic* bold**";
+        let inl = parse_inlines(line);
+        assert_eq!(inl.len(), 1);
+        match &inl[0] {
+            Inline::Strong(children) => {
+                assert_eq!(children.len(), 3);
+                assert_eq!(children[0], Inline::Text("bold ".into()));
+                match &children[1] {
+                    Inline::Em(em_children) => {
+                        assert_eq!(em_children.len(), 1);
+                        assert_eq!(em_children[0], Inline::Text("italic".into()));
+                    }
+                    _ => panic!("expected Em"),
+                }
+                assert_eq!(children[2], Inline::Text(" bold".into()));
+            }
+            _ => panic!("expected Strong"),
+        }
+    }
+
+    #[test]
+    fn parses_nested_emphasis_with_strong() {
+        let line = "*em **strong** em*";
+        let inl = parse_inlines(line);
+        assert_eq!(inl.len(), 1);
+        match &inl[0] {
+            Inline::Em(children) => {
+                assert_eq!(children.len(), 3);
+                assert_eq!(children[0], Inline::Text("em ".into()));
+                match &children[1] {
+                    Inline::Strong(strong_children) => {
+                        assert_eq!(strong_children.len(), 1);
+                        assert_eq!(strong_children[0], Inline::Text("strong".into()));
+                    }
+                    _ => panic!("expected Strong"),
+                }
+                assert_eq!(children[2], Inline::Text(" em".into()));
+            }
+            _ => panic!("expected Em"),
+        }
+    }
+
+    #[test]
+    fn renders_nested_inline_markup_to_html() {
+        let line = "**bold *italic* text**";
+        let html = join_inlines(&parse_inlines(line));
+        assert_eq!(html, "<strong>bold <em>italic</em> text</strong>");
+    }
+
+    #[test]
+    fn parses_link_with_nested_markup() {
+        let line = "`**bold** link <https://example.com>`_";
+        let inl = parse_inlines(line);
+        assert_eq!(inl.len(), 1);
+        match &inl[0] {
+            Inline::Link { text, url } => {
+                assert_eq!(url, "https://example.com");
+                assert_eq!(text.len(), 2);
+                match &text[0] {
+                    Inline::Strong(strong_children) => {
+                        assert_eq!(strong_children.len(), 1);
+                        assert_eq!(strong_children[0], Inline::Text("bold".into()));
+                    }
+                    _ => panic!("expected Strong in link text"),
+                }
+                assert_eq!(text[1], Inline::Text(" link".into()));
+            }
+            _ => panic!("expected Link"),
+        }
+    }
+
+    #[test]
+    fn nested_markup_does_not_break_code_blocks() {
+        let line = "Use ``**not bold**`` for literals";
+        let inl = parse_inlines(line);
+        assert!(matches!(&inl[1], Inline::Code(s) if s == "**not bold**"));
+    }
+
+    #[test]
+    fn multiple_levels_of_nesting() {
+        let line = "**strong with *emphasis* inside** and *emphasis with **strong** inside*";
+        let html = join_inlines(&parse_inlines(line));
+        assert!(html.contains("<strong>strong with <em>emphasis</em> inside</strong>"));
+        assert!(html.contains("<em>emphasis with <strong>strong</strong> inside</em>"));
     }
 }

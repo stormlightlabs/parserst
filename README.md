@@ -109,12 +109,16 @@ See [MIT License](./LICENSE) or learn [more here](https://opensource.org/license
 
 ## Roadmap
 
-- [ ] Nested inline markup (e.g. `*bold and *italic* inside*`)
+- [x] Nested inline markup (e.g. `*bold and *italic* inside*`)
 - [ ] Support for `::` literal blocks
 - [ ] Directive syntax (`.. note::`, `.. code-block::`)
 - [ ] Comment and field list improvements
 - [ ] Table parsing (simple & grid)
-- [ ] `serde` feature for AST serialization
+- [ ] Feature Flags
+    - [ ] `serde` feature for AST serialization
+    - [ ] Markdown behind flag
+- [ ] Fixtures/examples for tests
+    - [ ] > 90% coverage
 
 ---
 

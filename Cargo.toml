@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 html2md = "0.2.15"
+serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.17"
 
 [lints.clippy]
