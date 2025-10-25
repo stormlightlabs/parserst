@@ -1,4 +1,4 @@
-use super::{Block, Inline, list_kind};
+use super::{Block, Field, Inline, list_kind};
 use crate::{Lines, ParseError, is_blank, leading_indent, parse, strip_indent_preserve};
 
 fn is_definition_entry(s: &str) -> bool {
@@ -162,46 +162,6 @@ pub fn parse_definition_entries(ls: &mut Lines<'_>) -> Result<Option<Vec<Block>>
     Ok(Some(blocks))
 }
 
-fn field_label(kind: &str) -> String {
-    let lower = kind.to_ascii_lowercase();
-    match lower.as_str() {
-        "param" | "parameter" | "arg" | "argument" => "Parameter".to_string(),
-        "type" => "Type".to_string(),
-        "return" | "returns" => "Returns".to_string(),
-        "yield" | "yields" => "Yields".to_string(),
-        "raise" | "raises" => "Raises".to_string(),
-        "rtype" => "Return Type".to_string(),
-        "ivar" => "Instance Variable".to_string(),
-        "cvar" => "Class Variable".to_string(),
-        "var" => "Variable".to_string(),
-        "seealso" => "See Also".to_string(),
-        "note" => "Note".to_string(),
-        other => {
-            if other.is_empty() {
-                "Field".to_string()
-            } else {
-                let mut chars = other.chars();
-                match chars.next() {
-                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                    None => other.to_string(),
-                }
-            }
-        }
-    }
-}
-
-fn build_field_label(kind: &str, arg: Option<&str>) -> Vec<Inline> {
-    let mut inlines = Vec::new();
-    inlines.push(Inline::Strong(vec![Inline::Text(field_label(kind))]));
-    if let Some(arg) = arg {
-        if !arg.is_empty() {
-            inlines.push(Inline::Text(" ".into()));
-            inlines.push(Inline::Code(arg.to_string()));
-        }
-    }
-    inlines
-}
-
 fn is_field_line(s: &str) -> bool {
     let t = s.trim_start();
     if !t.starts_with(':') {
@@ -211,33 +171,7 @@ fn is_field_line(s: &str) -> bool {
     if let Some(end) = rest.find(':') { !rest[..end].trim().is_empty() } else { false }
 }
 
-fn build_field_blocks(kind: &str, arg: Option<&str>, body_text: &str) -> Result<Vec<Block>, ParseError> {
-    let mut blocks = if body_text.trim().is_empty() { Vec::new() } else { parse(body_text)? };
-    let mut label_inlines = build_field_label(kind, arg);
-    if blocks.is_empty() {
-        blocks.push(Block::Paragraph(label_inlines));
-        return Ok(blocks);
-    }
-    match &mut blocks[0] {
-        Block::Paragraph(inlines) => {
-            if !inlines.is_empty() {
-                label_inlines.push(Inline::Text(": ".into()));
-                label_inlines.append(inlines);
-                *inlines = label_inlines;
-            } else {
-                *inlines = label_inlines;
-            }
-        }
-        _ => {
-            let mut para = label_inlines;
-            para.push(Inline::Text(":".into()));
-            blocks.insert(0, Block::Paragraph(para));
-        }
-    }
-    Ok(blocks)
-}
-
-pub fn parse_field_entries(ls: &mut Lines<'_>) -> Result<Option<Vec<Block>>, ParseError> {
+pub fn parse_field_entries(ls: &mut Lines<'_>) -> Result<Option<Block>, ParseError> {
     let Some(line) = ls.peek() else {
         return Ok(None);
     };
@@ -245,7 +179,7 @@ pub fn parse_field_entries(ls: &mut Lines<'_>) -> Result<Option<Vec<Block>>, Par
         return Ok(None);
     }
 
-    let mut blocks = Vec::new();
+    let mut fields = Vec::new();
 
     while let Some(line) = ls.peek() {
         if !is_field_line(line.raw) {
@@ -260,7 +194,7 @@ pub fn parse_field_entries(ls: &mut Lines<'_>) -> Result<Option<Vec<Block>>, Par
         let mut parts = heading.splitn(2, ' ');
         let kind = parts.next().unwrap();
         let arg = parts.next().map(|s| s.trim()).filter(|s| !s.is_empty());
-        let body_initial = rest[colon_idx + 1..].trim_start();
+        let body_initial = rest[colon_idx + 1..].trim();
         let mut body_text = String::new();
         if !body_initial.is_empty() {
             body_text.push_str(body_initial);
@@ -270,7 +204,8 @@ pub fn parse_field_entries(ls: &mut Lines<'_>) -> Result<Option<Vec<Block>>, Par
         while let Some(next) = ls.peek() {
             if is_blank(next.raw) {
                 if let Some(after_blank) = ls.peek_next() {
-                    if leading_indent(after_blank.raw) > indent_base {
+                    let after_indent = leading_indent(after_blank.raw);
+                    if after_indent > indent_base {
                         ls.next();
                         if !body_text.is_empty() {
                             body_text.push('\n');
@@ -282,11 +217,7 @@ pub fn parse_field_entries(ls: &mut Lines<'_>) -> Result<Option<Vec<Block>>, Par
                 break;
             }
 
-            if is_field_line(next.raw)
-                || list_kind(next.raw).is_some()
-                || next.raw.trim() == "```"
-                || next.raw.trim_start().starts_with('>')
-            {
+            if is_field_line(next.raw) {
                 break;
             }
 
@@ -296,16 +227,18 @@ pub fn parse_field_entries(ls: &mut Lines<'_>) -> Result<Option<Vec<Block>>, Par
             }
 
             let cont = ls.next().unwrap();
-            let stripped = strip_indent_preserve(cont.raw, indent_base + 4).trim_end();
+            let strip_amount = indent_base + 1;
+            let stripped = strip_indent_preserve(cont.raw, strip_amount).trim_end();
             if !body_text.is_empty() {
                 body_text.push('\n');
             }
             body_text.push_str(stripped);
         }
 
-        let mut entry_blocks = build_field_blocks(kind, arg, &body_text)?;
-        blocks.append(&mut entry_blocks);
+        let body = if body_text.trim().is_empty() { Vec::new() } else { parse(&body_text)? };
+
+        fields.push(Field { name: kind.to_string(), argument: arg.unwrap_or("").to_string(), body });
     }
 
-    Ok(Some(blocks))
+    Ok(Some(Block::FieldList { fields }))
 }

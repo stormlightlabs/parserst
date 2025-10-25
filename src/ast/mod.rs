@@ -40,6 +40,17 @@ pub fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+/// A single field within a field list.
+///
+/// Fields consist of a name (e.g., "param"), an optional argument (e.g., "x"),
+/// and a body containing nested block content.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Field {
+    pub name: String,
+    pub argument: String,
+    pub body: Vec<Block>,
+}
+
 /// Block-level nodes in the parsed document tree.
 ///
 /// Blocks embed [`Inline`] nodes where appropriate and carry the semantic shape
@@ -66,6 +77,12 @@ pub enum Block {
     Table {
         headers: Vec<Vec<Inline>>,
         rows: Vec<Vec<Vec<Inline>>>,
+    },
+    /// Comment blocks that are parsed but excluded from rendered output
+    Comment(Vec<Block>),
+    /// Field list containing structured field entries
+    FieldList {
+        fields: Vec<Field>,
     },
 }
 
@@ -125,6 +142,24 @@ impl std::fmt::Display for Block {
                     write!(f, "</tbody>")?;
                 }
                 write!(f, "</table>")
+            }
+            Block::Comment(_) => Ok(()),
+            Block::FieldList { fields } => {
+                write!(f, "<dl>")?;
+                for field in fields {
+                    let term = if field.argument.is_empty() {
+                        field.name.clone()
+                    } else {
+                        format!("{} {}", field.name, field.argument)
+                    };
+                    write!(f, "<dt>{}</dt>", html_escape(&term))?;
+                    write!(f, "<dd>")?;
+                    for block in &field.body {
+                        write!(f, "{block}")?;
+                    }
+                    write!(f, "</dd>")?;
+                }
+                write!(f, "</dl>")
             }
         }
     }

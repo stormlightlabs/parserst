@@ -25,7 +25,7 @@ cmp_null = "deny"
 manual_map = "deny"
 
 too_many_arguments = "warn"
-cyclomatic_complexity = "warn"
+cognitive_complexity = "warn"
 large_enum_variant = "warn"
 needless_borrow = "warn"
 needless_pass_by_value = "warn"

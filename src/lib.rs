@@ -66,67 +66,6 @@ fn leading_indent(s: &str) -> usize {
     s.chars().take_while(|c| c.is_whitespace()).count()
 }
 
-fn is_bullet(s: &str) -> bool {
-    let t = s.trim_start();
-    t.starts_with("- ") || t.starts_with("* ") || t.starts_with("+ ")
-}
-
-fn is_ordered_bullet(s: &str) -> bool {
-    let t = s.trim_start();
-    let bytes = t.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == 0 || i >= bytes.len() {
-        return false;
-    }
-    bytes[i] == b'.' && i + 1 < bytes.len() && bytes[i + 1] == b' '
-}
-
-fn strip_bullet(s: &str) -> Option<&str> {
-    let t = s.trim_start();
-    for p in ["- ", "* ", "+ "] {
-        if let Some(rest) = t.strip_prefix(p) {
-            return Some(rest);
-        }
-    }
-    None
-}
-
-fn strip_ordered_bullet(s: &str) -> Option<&str> {
-    let t = s.trim_start();
-    let bytes = t.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == 0 || i >= bytes.len() || bytes[i] != b'.' {
-        return None;
-    }
-    if i + 1 >= bytes.len() || bytes[i + 1] != b' ' {
-        return None;
-    }
-    Some(&t[i + 2..])
-}
-
-fn list_kind(s: &str) -> Option<ListKind> {
-    if is_bullet(s) {
-        Some(ListKind::Unordered)
-    } else if is_ordered_bullet(s) {
-        Some(ListKind::Ordered)
-    } else {
-        None
-    }
-}
-
-fn strip_list_marker(s: &str, kind: ListKind) -> Option<&str> {
-    match kind {
-        ListKind::Unordered => strip_bullet(s),
-        ListKind::Ordered => strip_ordered_bullet(s),
-    }
-}
-
 fn colon_heading_text(current: &Line<'_>, next: Option<&Line<'_>>) -> Option<String> {
     let trimmed = current.raw.trim();
     if trimmed.starts_with("..") {
@@ -176,315 +115,6 @@ fn strip_indent_preserve(s: &str, indent: usize) -> &str {
     ""
 }
 
-fn is_definition_entry(s: &str) -> bool {
-    let indent = leading_indent(s);
-    let t = s.trim_start();
-    if t.starts_with(':') || t.starts_with("..") {
-        return false;
-    }
-
-    if indent == 0 {
-        return match t.find(" : ") {
-            Some(idx) => !t[..idx].trim().is_empty(),
-            None => false,
-        };
-    }
-
-    match t.find(':') {
-        Some(idx) => !t[..idx].trim().is_empty(),
-        None => false,
-    }
-}
-
-fn build_definition_blocks(term: &str, classifier: Option<&str>, body_text: &str) -> Result<Vec<Block>, ParseError> {
-    let mut blocks = if body_text.trim().is_empty() { Vec::new() } else { parse(body_text)? };
-
-    let mut label = Vec::new();
-    label.push(Inline::Strong(vec![Inline::Text(term.to_string())]));
-    if let Some(classifier) = classifier {
-        if !classifier.is_empty() {
-            label.push(Inline::Text(" (".into()));
-            label.push(Inline::Em(vec![Inline::Text(classifier.to_string())]));
-            label.push(Inline::Text(")".into()));
-        }
-    }
-
-    if blocks.is_empty() {
-        blocks.push(Block::Paragraph(label));
-        return Ok(blocks);
-    }
-
-    match &mut blocks[0] {
-        Block::Paragraph(inlines) => {
-            if !inlines.is_empty() {
-                label.push(Inline::Text(": ".into()));
-                label.append(inlines);
-                *inlines = label;
-            } else {
-                *inlines = label;
-            }
-        }
-        _ => {
-            let mut para = label;
-            para.push(Inline::Text(":".into()));
-            blocks.insert(0, Block::Paragraph(para));
-        }
-    }
-
-    Ok(blocks)
-}
-
-fn split_definition_line(input: &str) -> (String, Option<String>, String) {
-    let idx = input.find(':').unwrap_or(input.len());
-    let term_part = input[..idx].trim();
-    let mut term = term_part.to_string();
-
-    let after = if idx < input.len() { &input[idx + 1..] } else { "" };
-    let prev_is_space = idx > 0 && input.as_bytes()[idx - 1] == b' ';
-    let next_is_space = after.starts_with(' ');
-
-    let mut classifier = None;
-    if term.ends_with(')') {
-        if let Some(open_idx) = term.rfind('(') {
-            let inner = term[open_idx + 1..term.len() - 1].trim();
-            if !inner.is_empty() {
-                classifier = Some(inner.to_string());
-                term = term[..open_idx].trim().to_string();
-            }
-        }
-    }
-
-    let after_trim = after.trim();
-    let mut body_initial = String::new();
-
-    if prev_is_space && next_is_space && !after_trim.is_empty() && classifier.is_none() {
-        classifier = Some(after_trim.to_string());
-    } else if !after_trim.is_empty() {
-        body_initial = after_trim.to_string();
-    }
-
-    (term, classifier, body_initial)
-}
-
-fn parse_definition_entries(ls: &mut Lines<'_>) -> Result<Option<Vec<Block>>, ParseError> {
-    let Some(line) = ls.peek() else {
-        return Ok(None);
-    };
-
-    if !is_definition_entry(line.raw) {
-        return Ok(None);
-    }
-
-    let mut blocks = Vec::new();
-
-    while let Some(line) = ls.peek() {
-        if !is_definition_entry(line.raw) {
-            break;
-        }
-
-        let line = ls.next().unwrap();
-        let trimmed = line.raw.trim_start();
-        let (term, classifier_opt, body_initial) = split_definition_line(trimmed);
-        let classifier_ref = classifier_opt.as_deref();
-        let indent_base = leading_indent(line.raw);
-        let mut body_text = String::new();
-
-        if !body_initial.is_empty() {
-            body_text.push_str(&body_initial);
-        }
-
-        while let Some(next) = ls.peek() {
-            if is_blank(next.raw) {
-                if let Some(after_blank) = ls.peek_next() {
-                    if leading_indent(after_blank.raw) > indent_base {
-                        ls.next();
-                        if !body_text.is_empty() {
-                            body_text.push('\n');
-                            body_text.push('\n');
-                        }
-                        continue;
-                    }
-                }
-                break;
-            }
-
-            if is_field_line(next.raw)
-                || list_kind(next.raw).is_some()
-                || is_definition_entry(next.raw)
-                || next.raw.trim() == "```"
-                || next.raw.trim_start().starts_with('>')
-            {
-                break;
-            }
-
-            let indent = leading_indent(next.raw);
-            if indent <= indent_base {
-                break;
-            }
-
-            let cont = ls.next().unwrap();
-            let stripped = strip_indent_preserve(cont.raw, indent_base + 4).trim_end();
-            if !body_text.is_empty() {
-                body_text.push('\n');
-            }
-            body_text.push_str(stripped);
-        }
-
-        let mut entry_blocks = build_definition_blocks(&term, classifier_ref, &body_text)?;
-        blocks.append(&mut entry_blocks);
-    }
-
-    Ok(Some(blocks))
-}
-
-fn field_label(kind: &str) -> String {
-    let lower = kind.to_ascii_lowercase();
-    match lower.as_str() {
-        "param" | "parameter" | "arg" | "argument" => "Parameter".to_string(),
-        "type" => "Type".to_string(),
-        "return" | "returns" => "Returns".to_string(),
-        "yield" | "yields" => "Yields".to_string(),
-        "raise" | "raises" => "Raises".to_string(),
-        "rtype" => "Return Type".to_string(),
-        "ivar" => "Instance Variable".to_string(),
-        "cvar" => "Class Variable".to_string(),
-        "var" => "Variable".to_string(),
-        "seealso" => "See Also".to_string(),
-        "note" => "Note".to_string(),
-        other => {
-            if other.is_empty() {
-                "Field".to_string()
-            } else {
-                let mut chars = other.chars();
-                match chars.next() {
-                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                    None => other.to_string(),
-                }
-            }
-        }
-    }
-}
-
-fn build_field_label(kind: &str, arg: Option<&str>) -> Vec<Inline> {
-    let mut inlines = Vec::new();
-    inlines.push(Inline::Strong(vec![Inline::Text(field_label(kind))]));
-    if let Some(arg) = arg {
-        if !arg.is_empty() {
-            inlines.push(Inline::Text(" ".into()));
-            inlines.push(Inline::Code(arg.to_string()));
-        }
-    }
-    inlines
-}
-
-fn is_field_line(s: &str) -> bool {
-    let t = s.trim_start();
-    if !t.starts_with(':') {
-        return false;
-    }
-    let rest = &t[1..];
-    if let Some(end) = rest.find(':') { !rest[..end].trim().is_empty() } else { false }
-}
-
-fn build_field_blocks(kind: &str, arg: Option<&str>, body_text: &str) -> Result<Vec<Block>, ParseError> {
-    let mut blocks = if body_text.trim().is_empty() { Vec::new() } else { parse(body_text)? };
-    let mut label_inlines = build_field_label(kind, arg);
-    if blocks.is_empty() {
-        blocks.push(Block::Paragraph(label_inlines));
-        return Ok(blocks);
-    }
-    match &mut blocks[0] {
-        Block::Paragraph(inlines) => {
-            if !inlines.is_empty() {
-                label_inlines.push(Inline::Text(": ".into()));
-                label_inlines.append(inlines);
-                *inlines = label_inlines;
-            } else {
-                *inlines = label_inlines;
-            }
-        }
-        _ => {
-            let mut para = label_inlines;
-            para.push(Inline::Text(":".into()));
-            blocks.insert(0, Block::Paragraph(para));
-        }
-    }
-    Ok(blocks)
-}
-
-fn parse_field_entries(ls: &mut Lines<'_>) -> Result<Option<Vec<Block>>, ParseError> {
-    let Some(line) = ls.peek() else {
-        return Ok(None);
-    };
-    if !is_field_line(line.raw) {
-        return Ok(None);
-    }
-
-    let mut blocks = Vec::new();
-
-    while let Some(line) = ls.peek() {
-        if !is_field_line(line.raw) {
-            break;
-        }
-
-        let line = ls.next().unwrap();
-        let trimmed = line.raw.trim_start();
-        let rest = &trimmed[1..];
-        let colon_idx = rest.find(':').unwrap();
-        let heading = rest[..colon_idx].trim();
-        let mut parts = heading.splitn(2, ' ');
-        let kind = parts.next().unwrap();
-        let arg = parts.next().map(|s| s.trim()).filter(|s| !s.is_empty());
-        let body_initial = rest[colon_idx + 1..].trim_start();
-        let mut body_text = String::new();
-        if !body_initial.is_empty() {
-            body_text.push_str(body_initial);
-        }
-        let indent_base = leading_indent(line.raw);
-
-        while let Some(next) = ls.peek() {
-            if is_blank(next.raw) {
-                if let Some(after_blank) = ls.peek_next() {
-                    if leading_indent(after_blank.raw) > indent_base {
-                        ls.next();
-                        if !body_text.is_empty() {
-                            body_text.push('\n');
-                            body_text.push('\n');
-                        }
-                        continue;
-                    }
-                }
-                break;
-            }
-
-            if is_field_line(next.raw)
-                || list_kind(next.raw).is_some()
-                || next.raw.trim() == "```"
-                || next.raw.trim_start().starts_with('>')
-            {
-                break;
-            }
-
-            let indent = leading_indent(next.raw);
-            if indent <= indent_base {
-                break;
-            }
-
-            let cont = ls.next().unwrap();
-            let stripped = strip_indent_preserve(cont.raw, indent_base + 4).trim_end();
-            if !body_text.is_empty() {
-                body_text.push('\n');
-            }
-            body_text.push_str(stripped);
-        }
-
-        let mut entry_blocks = build_field_blocks(kind, arg, &body_text)?;
-        blocks.append(&mut entry_blocks);
-    }
-
-    Ok(Some(blocks))
-}
-
 fn underline_level(s: &str) -> Option<u8> {
     let t = s.trim();
     if !t.is_empty() && t.chars().all(|c| c == '=') {
@@ -494,111 +124,6 @@ fn underline_level(s: &str) -> Option<u8> {
     } else {
         None
     }
-}
-
-/// Find closing single asterisk that is not part of a double asterisk
-fn find_single_asterisk_close(text: &str) -> Option<usize> {
-    let bytes = text.as_bytes();
-    for i in 0..text.len() {
-        if bytes[i] == b'*' {
-            let before_is_asterisk = i > 0 && bytes[i - 1] == b'*';
-            let after_is_asterisk = i + 1 < bytes.len() && bytes[i + 1] == b'*';
-            if !before_is_asterisk && !after_is_asterisk {
-                return Some(i);
-            }
-        }
-    }
-    None
-}
-
-/// Recursive descent parser for inline markup with nesting support.
-/// Handles **strong**, *em*, `code`, and `text <url>`_ references.
-fn parse_inlines(text: &str) -> Vec<Inline> {
-    let mut out = Vec::new();
-    let mut buf = String::new();
-    let bytes = text.as_bytes();
-    let mut i = 0;
-
-    let flush_text = |buf: &mut String, out: &mut Vec<Inline>| {
-        if !buf.is_empty() {
-            out.push(Inline::Text(std::mem::take(buf)));
-        }
-    };
-
-    while i < text.len() {
-        if bytes[i] == b'`' && i + 1 < text.len() && bytes[i + 1] == b'`' {
-            if let Some(end) = text[i + 2..].find("``") {
-                let inner = &text[i + 2..i + 2 + end];
-                flush_text(&mut buf, &mut out);
-                out.push(Inline::Code(inner.to_string()));
-                i += 2 + end + 2;
-                continue;
-            }
-        }
-
-        if bytes[i] == b'*' && i + 1 < text.len() && bytes[i + 1] == b'*' {
-            if let Some(end) = text[i + 2..].find("**") {
-                let inner = &text[i + 2..i + 2 + end];
-                if !inner.is_empty() {
-                    flush_text(&mut buf, &mut out);
-                    let children = parse_inlines(inner);
-                    out.push(Inline::Strong(children));
-                    i += 2 + end + 2;
-                    continue;
-                }
-            }
-        }
-
-        if bytes[i] == b'*' {
-            if let Some(end) = find_single_asterisk_close(&text[i + 1..]) {
-                let inner = &text[i + 1..i + 1 + end];
-                if !inner.is_empty() {
-                    flush_text(&mut buf, &mut out);
-                    let children = parse_inlines(inner);
-                    out.push(Inline::Em(children));
-                    i += 1 + end + 1;
-                    continue;
-                }
-            }
-        }
-
-        if bytes[i] == b'`' {
-            if let Some(end) = text[i + 1..].find('`') {
-                let closing_tick = i + 1 + end;
-                let after_tick = closing_tick + 1;
-
-                if after_tick < text.len() && bytes[after_tick] == b'_' {
-                    let inner = &text[i + 1..closing_tick];
-                    if let (Some(l), Some(r)) = (inner.find('<'), inner.rfind('>')) {
-                        if r > l {
-                            let label = inner[..l].trim();
-                            let url = inner[l + 1..r].trim();
-                            if !label.is_empty() && !url.is_empty() {
-                                flush_text(&mut buf, &mut out);
-                                let text_children = parse_inlines(label);
-                                out.push(Inline::Link { text: text_children, url: url.to_string() });
-                                i = after_tick + 1;
-                                continue;
-                            }
-                        }
-                    }
-                }
-
-                flush_text(&mut buf, &mut out);
-                let inner = &text[i + 1..closing_tick];
-                out.push(Inline::Code(inner.to_string()));
-                i = closing_tick + 1;
-                continue;
-            }
-        }
-
-        let ch = text[i..].chars().next().unwrap();
-        buf.push(ch);
-        i += ch.len_utf8();
-    }
-
-    flush_text(&mut buf, &mut out);
-    out
 }
 
 fn normalize_docstring(input: &str) -> String {
@@ -637,7 +162,6 @@ fn normalize_docstring(input: &str) -> String {
         .join("\n")
 }
 
-/// Skip blank lines in the input
 fn skip_blank_lines(ls: &mut Lines<'_>) {
     while let Some(l) = ls.peek() {
         if is_blank(l.raw) {
@@ -689,31 +213,12 @@ fn try_parse_quote(ls: &mut Lines<'_>) -> Result<Option<Block>, ParseError> {
     Ok(Some(Block::Quote(inner)))
 }
 
-/// Try to parse a list (ordered or unordered)
-fn try_parse_list(ls: &mut Lines<'_>) -> Option<Block> {
-    let l = ls.peek()?;
-    let kind = list_kind(l.raw)?;
-
-    let mut items: Vec<Vec<Inline>> = Vec::new();
-    while let Some(it) = ls.peek() {
-        match list_kind(it.raw) {
-            Some(next_kind) if next_kind == kind => {
-                let line = ls.next().unwrap();
-                let content = strip_list_marker(line.raw, kind).unwrap().trim_end();
-                items.push(parse_inlines(content));
-            }
-            _ => break,
-        }
-    }
-    Some(Block::List { kind, items })
-}
-
 /// Try to parse a colon-style heading (Heading:)
 fn try_parse_colon_heading(ls: &mut Lines<'_>) -> Option<Block> {
     let line = ls.peek()?;
     let title = colon_heading_text(line, ls.peek_next())?;
     ls.next();
-    Some(Block::Heading { level: 2, inlines: parse_inlines(&title) })
+    Some(Block::Heading { level: 2, inlines: ast::parse_inlines(&title) })
 }
 
 /// Try to parse a setext-style heading (underlined with = or -)
@@ -722,7 +227,7 @@ fn try_parse_setext_heading(ls: &mut Lines<'_>) -> Option<Block> {
     let ul = ls.peek()?;
     let level = underline_level(ul.raw)?;
     ls.next();
-    let inlines = parse_inlines(title.raw.trim());
+    let inlines = ast::parse_inlines(title.raw.trim());
     Some(Block::Heading { level, inlines })
 }
 
@@ -770,6 +275,64 @@ fn try_parse_literal_block(ls: &mut Lines<'_>) -> Option<Block> {
     }
 
     Some(Block::LiteralBlock(buf.trim_end().to_string()))
+}
+
+/// Try to parse a comment (.. without ::)
+fn try_parse_comment(ls: &mut Lines<'_>) -> Result<Option<Block>, ParseError> {
+    let line = ls.peek().ok_or(ParseError::Eof)?;
+    let trimmed = line.raw.trim_start();
+
+    if !trimmed.starts_with(".. ") {
+        return Ok(None);
+    }
+
+    let after_dots = &trimmed[3..];
+
+    if after_dots.contains("::") {
+        return Ok(None);
+    }
+
+    let base_indent = leading_indent(line.raw);
+    ls.next();
+
+    let mut content_text = String::new();
+    if !after_dots.trim().is_empty() {
+        content_text.push_str(after_dots.trim());
+    }
+
+    if let Some(next) = ls.peek() {
+        if is_blank(next.raw) {
+            ls.next();
+        }
+    }
+
+    let content_indent = base_indent + 1;
+
+    while let Some(l) = ls.peek() {
+        if is_blank(l.raw) {
+            if let Some(next) = ls.peek_next() {
+                if !is_blank(next.raw) && leading_indent(next.raw) <= base_indent {
+                    break;
+                }
+            }
+            if !content_text.is_empty() {
+                content_text.push('\n');
+            }
+            ls.next();
+        } else if leading_indent(l.raw) > base_indent {
+            let stripped = strip_indent_preserve(ls.next().unwrap().raw, content_indent);
+            if !content_text.is_empty() {
+                content_text.push('\n');
+            }
+            content_text.push_str(stripped);
+        } else {
+            break;
+        }
+    }
+
+    let content = if content_text.trim().is_empty() { Vec::new() } else { parse(&content_text)? };
+
+    Ok(Some(Block::Comment(content)))
 }
 
 /// Try to parse a directive (.. name:: argument)
@@ -835,247 +398,9 @@ fn try_parse_directive(ls: &mut Lines<'_>) -> Result<Option<Block>, ParseError> 
     Ok(Some(Block::Directive { name: name.to_string(), argument, content }))
 }
 
-/// Check if a line is a simple table separator (all = and spaces)
-fn is_table_separator(s: &str) -> bool {
-    let trimmed = s.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    trimmed.chars().all(|c| c == '=' || c == ' ')
-}
-
-/// Check if a line is a grid table border (+--+--+)
-fn is_grid_border(s: &str) -> bool {
-    let trimmed = s.trim();
-    if trimmed.is_empty() || !trimmed.starts_with('+') {
-        return false;
-    }
-    trimmed.chars().all(|c| c == '+' || c == '-' || c == '=' || c == ' ')
-}
-
-/// Parse column positions from a grid table border line
-fn parse_grid_columns(border: &str) -> Vec<usize> {
-    border
-        .char_indices()
-        .filter_map(|(i, c)| if c == '+' { Some(i) } else { None })
-        .collect()
-}
-
-/// Check if a grid border line is a header separator (contains =)
-fn is_grid_header_separator(s: &str) -> bool {
-    s.contains('=')
-}
-
-/// Parse column boundaries from a separator line
-fn parse_column_boundaries(sep: &str) -> Vec<(usize, usize)> {
-    let mut columns = Vec::new();
-    let mut in_col = false;
-    let mut start = 0;
-
-    for (i, ch) in sep.char_indices() {
-        if ch == '=' {
-            if !in_col {
-                in_col = true;
-                start = i;
-            }
-        } else if in_col {
-            columns.push((start, i));
-            in_col = false;
-        }
-    }
-    if in_col {
-        columns.push((start, sep.len()));
-    }
-    columns
-}
-
-/// Extract cell content from a line based on column boundaries
-fn extract_cells(line: &str, columns: &[(usize, usize)]) -> Vec<String> {
-    columns
-        .iter()
-        .map(|(start, end)| {
-            let cell_text = if *start < line.len() {
-                let end_bounded = (*end).min(line.len());
-                &line[*start..end_bounded]
-            } else {
-                ""
-            };
-            cell_text.trim().to_string()
-        })
-        .collect()
-}
-
-/// Try to parse a simple table (=== separators)
-fn try_parse_simple_table(ls: &mut Lines<'_>) -> Option<Block> {
-    let first_line = ls.peek()?;
-    if !is_table_separator(first_line.raw) {
-        return None;
-    }
-
-    let separator = first_line.raw;
-    let columns = parse_column_boundaries(separator);
-    if columns.is_empty() {
-        return None;
-    }
-
-    ls.next();
-
-    let header_line = ls.peek()?;
-    if is_table_separator(header_line.raw) {
-        ls.backtrack();
-        return None;
-    }
-    let header_cells = extract_cells(header_line.raw, &columns);
-    ls.next();
-
-    if !ls.peek().map(|l| is_table_separator(l.raw)).unwrap_or(false) {
-        ls.backtrack();
-        ls.backtrack();
-        return None;
-    }
-    ls.next();
-
-    let mut body_rows = Vec::new();
-    while let Some(line) = ls.peek() {
-        if is_table_separator(line.raw) {
-            ls.next();
-            break;
-        }
-        let cells = extract_cells(line.raw, &columns);
-        body_rows.push(cells);
-        ls.next();
-    }
-
-    let headers: Vec<Vec<Inline>> = header_cells.into_iter().map(|cell| parse_inlines(&cell)).collect();
-
-    let rows: Vec<Vec<Vec<Inline>>> = body_rows
-        .into_iter()
-        .map(|row| row.into_iter().map(|cell| parse_inlines(&cell)).collect())
-        .collect();
-
-    Some(Block::Table { headers, rows })
-}
-
-/// Extract grid table cell from a row based on column positions
-fn extract_grid_cell(row: &str, start_col: usize, end_col: usize) -> String {
-    if start_col >= row.len() {
-        return String::new();
-    }
-    let end = end_col.min(row.len());
-    let cell_text = &row[start_col..end];
-
-    cell_text
-        .trim_matches(|c: char| c == '|' || c.is_whitespace())
-        .to_string()
-}
-
-/// Try to parse a grid table (+---+---+)
-fn try_parse_grid_table(ls: &mut Lines<'_>) -> Option<Block> {
-    let first_border = ls.peek()?;
-    if !is_grid_border(first_border.raw) {
-        return None;
-    }
-
-    let col_positions = parse_grid_columns(first_border.raw);
-    if col_positions.len() < 2 {
-        return None;
-    }
-
-    ls.next();
-
-    let mut all_rows: Vec<Vec<String>> = Vec::new();
-    let mut current_row_lines: Vec<String> = Vec::new();
-    let mut header_row_count = 0;
-    let mut found_header_sep = false;
-
-    while let Some(line) = ls.peek() {
-        if is_grid_border(line.raw) {
-            if !current_row_lines.is_empty() {
-                let merged_row = merge_multi_line_row(&current_row_lines, &col_positions);
-                all_rows.push(merged_row);
-                current_row_lines.clear();
-
-                if !found_header_sep {
-                    header_row_count = all_rows.len();
-                }
-            }
-
-            if is_grid_header_separator(line.raw) && !found_header_sep {
-                found_header_sep = true;
-            }
-
-            ls.next();
-
-            if let Some(next) = ls.peek() {
-                if !is_grid_border(next.raw) && !next.raw.trim_start().starts_with('|') {
-                    break;
-                }
-            } else {
-                break;
-            }
-        } else if line.raw.trim_start().starts_with('|') {
-            current_row_lines.push(line.raw.to_string());
-            ls.next();
-        } else {
-            break;
-        }
-    }
-
-    if !current_row_lines.is_empty() {
-        let merged_row = merge_multi_line_row(&current_row_lines, &col_positions);
-        all_rows.push(merged_row);
-    }
-
-    if all_rows.is_empty() {
-        return None;
-    }
-
-    let (header_rows, body_rows) = if header_row_count > 0 {
-        all_rows.split_at(header_row_count)
-    } else {
-        (&all_rows[..0], all_rows.as_slice())
-    };
-
-    let headers: Vec<Vec<Inline>> = if !header_rows.is_empty() {
-        header_rows[0].iter().map(|cell| parse_inlines(cell)).collect()
-    } else {
-        Vec::new()
-    };
-
-    let rows: Vec<Vec<Vec<Inline>>> = body_rows
-        .iter()
-        .map(|row| row.iter().map(|cell| parse_inlines(cell)).collect())
-        .collect();
-
-    Some(Block::Table { headers, rows })
-}
-
-/// Merge multiple lines of a grid table row into single cells
-fn merge_multi_line_row(lines: &[String], col_positions: &[usize]) -> Vec<String> {
-    let num_cols = col_positions.len().saturating_sub(1);
-    let mut cells: Vec<String> = vec![String::new(); num_cols];
-
-    for line in lines {
-        for col_idx in 0..num_cols {
-            let start = col_positions[col_idx];
-            let end = col_positions[col_idx + 1];
-            let cell_content = extract_grid_cell(line, start, end);
-
-            if !cell_content.is_empty() {
-                if !cells[col_idx].is_empty() {
-                    cells[col_idx].push(' ');
-                }
-                cells[col_idx].push_str(&cell_content);
-            }
-        }
-    }
-
-    cells
-}
-
 /// Check if a line starts a new block (not a paragraph continuation)
 fn starts_new_block(line: &str) -> bool {
-    is_blank(line) || list_kind(line).is_some() || line.trim() == "```" || line.trim_start().starts_with('>')
+    is_blank(line) || ast::list_kind(line).is_some() || line.trim() == "```" || line.trim_start().starts_with('>')
 }
 
 /// Parse remaining content as a paragraph
@@ -1089,15 +414,14 @@ fn parse_paragraph(ls: &mut Lines<'_>) -> Option<Block> {
         buf.push('\n');
     }
     let text = buf.trim_end();
-    if text.is_empty() { None } else { Some(Block::Paragraph(parse_inlines(text))) }
+    if text.is_empty() { None } else { Some(Block::Paragraph(ast::parse_inlines(text))) }
 }
 
 /// Parse raw reStructuredText-like input into a vector of [`Block`] nodes.
 ///
-/// The parser walks the input top-to-bottom, attempting the most specific block constructs
-/// first (code fences, block quotes, lists, field lists, definition lists, headings) before
-/// falling back to paragraphs. When the stream cannot be consumed because of malformed markup,
-/// a [`ParseError`] is returned to the caller.
+/// The parser walks the input top-to-bottom, attempting the most specific block constructs first
+/// (code fences, block quotes, lists, field lists, definition lists, headings) before falling back to paragraphs.
+/// When the stream cannot be consumed because of malformed markup, a [`ParseError`] is returned to the caller.
 pub fn parse(input: &str) -> Result<Vec<Block>, ParseError> {
     let mut ls = Lines::new(input);
     let mut blocks = Vec::new();
@@ -1118,17 +442,22 @@ pub fn parse(input: &str) -> Result<Vec<Block>, ParseError> {
             continue;
         }
 
-        if let Some(block) = try_parse_list(&mut ls) {
+        if let Some(block) = ast::try_parse_list(&mut ls) {
             blocks.push(block);
             continue;
         }
 
-        if let Some(block) = try_parse_grid_table(&mut ls) {
+        if let Some(block) = ast::try_parse_grid_table(&mut ls) {
             blocks.push(block);
             continue;
         }
 
-        if let Some(block) = try_parse_simple_table(&mut ls) {
+        if let Some(block) = ast::try_parse_simple_table(&mut ls) {
+            blocks.push(block);
+            continue;
+        }
+
+        if let Some(block) = try_parse_comment(&mut ls)? {
             blocks.push(block);
             continue;
         }
@@ -1138,12 +467,12 @@ pub fn parse(input: &str) -> Result<Vec<Block>, ParseError> {
             continue;
         }
 
-        if let Some(field_blocks) = parse_field_entries(&mut ls)? {
-            blocks.extend(field_blocks);
+        if let Some(field_block) = ast::parse_field_entries(&mut ls)? {
+            blocks.push(field_block);
             continue;
         }
 
-        if let Some(def_blocks) = parse_definition_entries(&mut ls)? {
+        if let Some(def_blocks) = ast::parse_definition_entries(&mut ls)? {
             blocks.extend(def_blocks);
             continue;
         }
@@ -1317,7 +646,7 @@ A paragraph with *emphasis*, **strong**, and `code`.
     #[test]
     fn parses_emphasis_and_strong() {
         let line = "A *word* and a **strong** one";
-        let inl = parse_inlines(line);
+        let inl = ast::parse_inlines(line);
         let html = ast::join_inlines(&inl);
         assert!(html.contains("<em>word</em>"));
         assert!(html.contains("<strong>strong</strong>"));
@@ -1326,35 +655,35 @@ A paragraph with *emphasis*, **strong**, and `code`.
     #[test]
     fn parses_inline_code() {
         let line = "Inline `code` works";
-        let html = ast::join_inlines(&parse_inlines(line));
+        let html = ast::join_inlines(&ast::parse_inlines(line));
         assert!(html.contains("<code>code</code>"));
     }
 
     #[test]
     fn parses_double_backtick_code() {
         let line = "Use ``inline`` literals";
-        let html = ast::join_inlines(&parse_inlines(line));
+        let html = ast::join_inlines(&ast::parse_inlines(line));
         assert!(html.contains("<code>inline</code>"));
     }
 
     #[test]
     fn parses_inline_link() {
         let line = "`example <https://example.com>`_";
-        let html = ast::join_inlines(&parse_inlines(line));
+        let html = ast::join_inlines(&ast::parse_inlines(line));
         assert!(html.contains("<a href=\"https://example.com\">example</a>"));
     }
 
     #[test]
     fn inline_link_requires_reference_suffix() {
         let line = "`example <https://example.com>`";
-        let inl = parse_inlines(line);
+        let inl = ast::parse_inlines(line);
         assert_eq!(inl, vec![Inline::Code("example <https://example.com>".into())]);
     }
 
     #[test]
     fn inline_link_mixed_with_text() {
         let line = "Read `docs <https://example.com>`_ now.";
-        let inl = parse_inlines(line);
+        let inl = ast::parse_inlines(line);
         assert_eq!(
             inl,
             vec![
@@ -1368,7 +697,7 @@ A paragraph with *emphasis*, **strong**, and `code`.
     #[test]
     fn parses_mixed_inline_styles() {
         let line = "**bold** *em* `code` and `link <x>`_";
-        let html = ast::join_inlines(&parse_inlines(line));
+        let html = ast::join_inlines(&ast::parse_inlines(line));
         assert!(html.contains("<strong>bold</strong>"));
         assert!(html.contains("<em>em</em>"));
         assert!(html.contains("<code>code</code>"));
@@ -1378,7 +707,7 @@ A paragraph with *emphasis*, **strong**, and `code`.
     #[test]
     fn unmatched_markup_falls_back_to_text() {
         let line = "An *unfinished emphasis";
-        let inl = parse_inlines(line);
+        let inl = ast::parse_inlines(line);
         assert_eq!(inl, vec![Inline::Text("An *unfinished emphasis".into())]);
     }
 
@@ -1402,14 +731,16 @@ A paragraph with *emphasis*, **strong**, and `code`.
         let doc = ":param foo: Foo value\n:param bar: Bar value";
         let ast = parse(doc).unwrap();
 
-        assert!(matches!(ast.len(), 2));
+        assert_eq!(ast.len(), 1);
         match &ast[0] {
-            Block::Paragraph(inlines) => {
-                assert_eq!(inlines[0], Inline::Strong(vec![Inline::Text("Parameter".into())]));
-                assert_eq!(inlines[1], Inline::Text(" ".into()));
-                assert_eq!(inlines[2], Inline::Code("foo".into()));
+            Block::FieldList { fields } => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].name, "param");
+                assert_eq!(fields[0].argument, "foo");
+                assert_eq!(fields[1].name, "param");
+                assert_eq!(fields[1].argument, "bar");
             }
-            _ => panic!("expected paragraph for field"),
+            _ => panic!("expected FieldList"),
         }
     }
 
@@ -1530,7 +861,7 @@ code
     #[test]
     fn parses_nested_strong_with_emphasis() {
         let line = "**bold *italic* bold**";
-        let inl = parse_inlines(line);
+        let inl = ast::parse_inlines(line);
         assert_eq!(inl.len(), 1);
         match &inl[0] {
             Inline::Strong(children) => {
@@ -1552,7 +883,7 @@ code
     #[test]
     fn parses_nested_emphasis_with_strong() {
         let line = "*em **strong** em*";
-        let inl = parse_inlines(line);
+        let inl = ast::parse_inlines(line);
         assert_eq!(inl.len(), 1);
         match &inl[0] {
             Inline::Em(children) => {
@@ -1574,14 +905,14 @@ code
     #[test]
     fn renders_nested_inline_markup_to_html() {
         let line = "**bold *italic* text**";
-        let html = ast::join_inlines(&parse_inlines(line));
+        let html = ast::join_inlines(&ast::parse_inlines(line));
         assert_eq!(html, "<strong>bold <em>italic</em> text</strong>");
     }
 
     #[test]
     fn parses_link_with_nested_markup() {
         let line = "`**bold** link <https://example.com>`_";
-        let inl = parse_inlines(line);
+        let inl = ast::parse_inlines(line);
         assert_eq!(inl.len(), 1);
         match &inl[0] {
             Inline::Link { text, url } => {
@@ -1603,14 +934,14 @@ code
     #[test]
     fn nested_markup_does_not_break_code_blocks() {
         let line = "Use ``**not bold**`` for literals";
-        let inl = parse_inlines(line);
+        let inl = ast::parse_inlines(line);
         assert!(matches!(&inl[1], Inline::Code(s) if s == "**not bold**"));
     }
 
     #[test]
     fn multiple_levels_of_nesting() {
         let line = "**strong with *emphasis* inside** and *emphasis with **strong** inside*";
-        let html = ast::join_inlines(&parse_inlines(line));
+        let html = ast::join_inlines(&ast::parse_inlines(line));
         assert!(html.contains("<strong>strong with <em>emphasis</em> inside</strong>"));
         assert!(html.contains("<em>emphasis with <strong>strong</strong> inside</em>"));
     }
@@ -2036,5 +1367,266 @@ After table.
         assert!(matches!(&ast[0], Block::Paragraph(_)));
         assert!(matches!(&ast[1], Block::Table { .. }));
         assert!(matches!(&ast[2], Block::Paragraph(_)));
+    }
+
+    #[test]
+    fn parses_simple_comment() {
+        let doc = r#"
+.. This is a comment
+   It continues on the next line
+"#;
+        let ast = parse(doc).unwrap();
+        assert_eq!(ast.len(), 1);
+        match &ast[0] {
+            Block::Comment(content) => {
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    Block::Paragraph(inlines) => {
+                        let text = ast::join_inlines(inlines);
+                        assert!(text.contains("This is a comment"));
+                        assert!(text.contains("continues"));
+                    }
+                    _ => panic!("expected Paragraph in comment"),
+                }
+            }
+            _ => panic!("expected Comment"),
+        }
+    }
+
+    #[test]
+    fn comment_excluded_from_html() {
+        let doc = r#"
+Visible paragraph.
+
+.. This is a hidden comment
+   with multiple lines
+
+Another visible paragraph.
+"#;
+        let html = html_of(doc);
+        assert!(html.contains("Visible paragraph"));
+        assert!(html.contains("Another visible paragraph"));
+        assert!(!html.contains("hidden comment"));
+        assert!(!html.contains("multiple lines"));
+    }
+
+    #[test]
+    fn comment_with_nested_list() {
+        let doc = r#"
+.. This comment contains a list:
+
+   - Item 1
+   - Item 2
+   - Item 3
+"#;
+        let ast = parse(doc).unwrap();
+        assert_eq!(ast.len(), 1);
+        match &ast[0] {
+            Block::Comment(content) => {
+                assert!(content.len() >= 1);
+                let has_list = content.iter().any(|b| matches!(b, Block::List { .. }));
+                assert!(has_list, "Comment should contain a list");
+            }
+            _ => panic!("expected Comment"),
+        }
+    }
+
+    #[test]
+    fn comment_vs_directive_distinction() {
+        let doc = ".. This is a comment\n\n.. note::\n\n   This is a directive with content.";
+        let ast = parse(doc).unwrap();
+        let has_comment = ast.iter().any(|b| matches!(b, Block::Comment(_)));
+        let has_directive = ast.iter().any(|b| matches!(b, Block::Directive { .. }));
+        assert!(has_comment, "Should have a Comment block");
+        assert!(has_directive, "Should have a Directive block");
+        assert!(matches!(&ast[0], Block::Comment(_)), "First block should be Comment");
+    }
+
+    #[test]
+    fn multiple_comments() {
+        let doc = r#"
+.. First comment
+
+Some text.
+
+.. Second comment
+   with continuation
+
+More text.
+"#;
+        let ast = parse(doc).unwrap();
+        assert_eq!(ast.len(), 4);
+        assert!(matches!(&ast[0], Block::Comment(_)));
+        assert!(matches!(&ast[1], Block::Paragraph(_)));
+        assert!(matches!(&ast[2], Block::Comment(_)));
+        assert!(matches!(&ast[3], Block::Paragraph(_)));
+    }
+
+    #[test]
+    fn empty_comment() {
+        let doc = ".. ";
+        let ast = parse(doc).unwrap();
+        assert_eq!(ast.len(), 1);
+        match &ast[0] {
+            Block::Comment(content) => {
+                assert!(content.is_empty());
+            }
+            _ => panic!("expected Comment"),
+        }
+    }
+
+    #[test]
+    fn field_list_basic() {
+        let doc = r#"
+:param x: The x parameter
+:param y: The y parameter
+"#;
+        let ast = parse(doc).unwrap();
+        assert_eq!(ast.len(), 1);
+        match &ast[0] {
+            Block::FieldList { fields } => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].name, "param");
+                assert_eq!(fields[0].argument, "x");
+                assert_eq!(fields[1].name, "param");
+                assert_eq!(fields[1].argument, "y");
+            }
+            _ => panic!("expected FieldList"),
+        }
+    }
+
+    #[test]
+    fn field_list_empty_body() {
+        let doc = ":param x:";
+        let ast = parse(doc).unwrap();
+        assert_eq!(ast.len(), 1);
+        match &ast[0] {
+            Block::FieldList { fields } => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].name, "param");
+                assert_eq!(fields[0].argument, "x");
+                assert!(fields[0].body.is_empty());
+            }
+            _ => panic!("expected FieldList"),
+        }
+    }
+
+    #[test]
+    fn field_list_variable_indent() {
+        let doc = r#"
+:param x: First line
+  Continuation with 2 spaces
+   Continuation with 3 spaces
+    Continuation with 4 spaces
+"#;
+        let ast = parse(doc).unwrap();
+        match &ast[0] {
+            Block::FieldList { fields } => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].body.len(), 1);
+                match &fields[0].body[0] {
+                    Block::Paragraph(inlines) => {
+                        let text = ast::join_inlines(inlines);
+                        assert!(text.contains("First line"));
+                        assert!(text.contains("Continuation"));
+                    }
+                    _ => panic!("expected Paragraph"),
+                }
+            }
+            _ => panic!("expected FieldList"),
+        }
+    }
+
+    #[test]
+    fn field_list_with_nested_list() {
+        let doc = r#"
+:param items: The items to process:
+
+  - Item 1
+  - Item 2
+  - Item 3
+"#;
+        let ast = parse(doc).unwrap();
+        match &ast[0] {
+            Block::FieldList { fields } => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].name, "param");
+                assert_eq!(fields[0].argument, "items");
+                assert!(fields[0].body.len() >= 1);
+                eprintln!("Field body blocks: {:?}", fields[0].body);
+                let has_list = fields[0].body.iter().any(|b| matches!(b, Block::List { .. }));
+                assert!(has_list, "Expected list in field body");
+            }
+            _ => panic!("expected FieldList"),
+        }
+    }
+
+    #[test]
+    fn field_list_with_code_block() {
+        let doc = r#"
+:example: Here's an example:
+
+  ```
+  code here
+  ```
+"#;
+        let ast = parse(doc).unwrap();
+        match &ast[0] {
+            Block::FieldList { fields } => {
+                assert_eq!(fields.len(), 1);
+                assert!(fields[0].body.len() >= 1);
+                let has_code = fields[0].body.iter().any(|b| matches!(b, Block::CodeBlock(_)));
+                assert!(has_code);
+            }
+            _ => panic!("expected FieldList"),
+        }
+    }
+
+    #[test]
+    fn field_list_renders_as_dl() {
+        let doc = r#"
+:param x: The x value
+:returns: The result
+"#;
+        let html = html_of(doc);
+        assert!(html.contains("<dl>"));
+        assert!(html.contains("<dt>param x</dt>"));
+        assert!(html.contains("<dd>"));
+        assert!(html.contains("The x value"));
+        assert!(html.contains("</dl>"));
+    }
+
+    #[test]
+    fn field_list_multiple_blocks_in_body() {
+        let doc = r#"
+:param x: First paragraph about x.
+
+  Second paragraph about x.
+
+  - A list item
+  - Another item
+"#;
+        let ast = parse(doc).unwrap();
+        match &ast[0] {
+            Block::FieldList { fields } => {
+                assert_eq!(fields.len(), 1);
+                assert!(fields[0].body.len() >= 2);
+            }
+            _ => panic!("expected FieldList"),
+        }
+    }
+
+    #[test]
+    fn field_list_no_argument() {
+        let doc = ":returns: The return value";
+        let ast = parse(doc).unwrap();
+        match &ast[0] {
+            Block::FieldList { fields } => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].name, "returns");
+                assert_eq!(fields[0].argument, "");
+            }
+            _ => panic!("expected FieldList"),
+        }
     }
 }
