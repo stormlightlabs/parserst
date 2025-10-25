@@ -7,6 +7,7 @@ description = "A recursive-descent reST parser and rendered"
 homepage = "https://github.com/stormlightlabs/parserst"
 repository = "https://github.com/stormlightlabs/parserst"
 readme = "README.md"
+exclude = ["TODO.md", ".vscode/*"]
 
 [features]
 default = []
