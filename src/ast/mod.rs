@@ -1,7 +1,16 @@
+mod definitions;
+mod inlines;
+mod lists;
+mod table;
+
+pub use definitions::{parse_definition_entries, parse_field_entries};
+pub use inlines::parse_inlines;
+pub use lists::{ListKind, list_kind, try_parse_list};
+pub use table::{try_parse_grid_table, try_parse_simple_table};
+
 /// Inline-level nodes produced by the parser.
 ///
-/// These are rendered directly to HTML via [`std::fmt::Display`] and are reused
-/// by both the HTML and Markdown pipelines.
+/// These are rendered directly to HTML via [`std::fmt::Display`] and are reused by both the HTML and Markdown pipelines.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Inline {
     Text(String),
@@ -171,11 +180,4 @@ fn capitalize(s: &str) -> String {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
     }
-}
-
-/// List flavor used by [`Block::List`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ListKind {
-    Unordered,
-    Ordered,
 }
